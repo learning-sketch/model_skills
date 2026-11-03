@@ -1948,26 +1948,25 @@ def render_analysis(analysis: SnapshotAnalysis, *, stack_depth: int = 8) -> str:
     if not analysis.peak.trace_available:
         lines.append("  不可用：" + "；".join(analysis.peak.notes))
     else:
-        for device in analysis.peak.devices:
+        for peak in analysis.peak.devices:
             lines.append(
-                f"  设备 {device.device}: 峰值 allocated {format_bytes(device.peak_allocated_bytes)}"
-                f"，峰值 reserved {format_bytes(device.peak_reserved_bytes)}"
-                f"，trace 末尾 allocated {format_bytes(device.final_allocated_bytes)}"
-                f"（{device.event_count} 条事件）"
+                f"  设备 {peak.device}: 峰值 allocated {format_bytes(peak.peak_allocated_bytes)}"
+                f"，峰值 reserved {format_bytes(peak.peak_reserved_bytes)}"
+                f"，trace 末尾 allocated {format_bytes(peak.final_allocated_bytes)}"
+                f"（{peak.event_count} 条事件）"
             )
-            if device.peak_allocated_stack:
-                when = (
-                    f"事件 #{device.peak_allocated_event_index}"
-                    + (f" @ {device.peak_allocated_time_us} us" if device.peak_allocated_time_us else "")
+            if peak.peak_allocated_stack:
+                when = f"事件 #{peak.peak_allocated_event_index}" + (
+                    f" @ {peak.peak_allocated_time_us} us" if peak.peak_allocated_time_us else ""
                 )
                 lines.append(f"    推到峰值的那次分配（{when}）:")
-                for frame in device.peak_allocated_stack[:stack_depth]:
+                for frame in peak.peak_allocated_stack[:stack_depth]:
                     lines.append(f"      {frame}")
-            if device.largest_single_allocation_bytes:
+            if peak.largest_single_allocation_bytes:
                 lines.append(
-                    f"    单次最大分配 {format_bytes(device.largest_single_allocation_bytes)}"
+                    f"    单次最大分配 {format_bytes(peak.largest_single_allocation_bytes)}"
                 )
-                for frame in device.largest_single_allocation_stack[:4]:
+                for frame in peak.largest_single_allocation_stack[:4]:
                     lines.append(f"      {frame}")
         for note in analysis.peak.notes:
             lines.append(f"  注: {note}")
