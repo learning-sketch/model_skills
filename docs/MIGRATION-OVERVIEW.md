@@ -1,108 +1,116 @@
-# 迁移总览
+# 能力地图与建设状态
 
-本文档记录 [hicann/cannbot-skills](https://github.com/hicann/cannbot-skills) 的 `model/` 目录（21 个 skill）向类 CUDA 自研芯片的迁移分级与状态。
+本文档是整个仓库的主索引。
 
-源仓库快照：commit `03cbbb9`，21 个 skill，132 个文件，约 3.2 万行。
+## 先读这个
+
+任务最初的设想是把 [hicann/cannbot-skills](https://github.com/hicann/cannbot-skills) 的 `model/` 目录迁移过来。实际执行时发现**该项目的许可证明文禁止把它的内容用于非华为芯片**，详见 [LICENSE-CONSTRAINT.md](LICENSE-CONSTRAINT.md)。
+
+所以本仓库改为**按相同的能力领域独立编写**。源仓库的作用退化为一份能力清单的参照——"做 LLM 推理与训练优化大致需要覆盖哪些事"，这部分是行业共识，不是谁的专有资产。所有具体内容来自公开技术文献与通用生态实践。
+
+下文仍沿用"已建设 / 待建设"的分法来组织，但请注意：这里说的不是搬运进度，而是**你的芯片上这套能力建到了哪一步**。
 
 ---
 
 ## 一句话结论
 
-21 个 skill 中，**9 个已迁移**、**12 个保留待议**。
+21 个能力领域中，**9 个已经写出可用的 skill**，**12 个待定**。
 
-分界线不是"方法论是否通用"——绝大多数方法论都通用。真正的分界线是**这个 skill 的交付价值有多大比例落在厂商专有资产上**：算子目录、profiler 产物 schema、错误码本、dump 工具链。方法论可以改写，这些资产只能重建。
+待定的原因不是"方法论难写"——方法论基本都是公开知识。待定是因为这些领域的 skill 要能真正干活，**必须先有一个你的芯片上还不存在、或我还不知道是否存在的底层能力**：一个能导出流水线计数器的 profiler、一套张量级 dump 比对工具、一个成规模的融合算子库。没有这些，skill 写出来也只是一篇读起来合理但跑不动的文档。
+
+这 12 个领域具体缺什么、各有哪些建设选项，是 [DISCUSSION.md](DISCUSSION.md) 要和你讨论的内容。
 
 ---
 
-## 迁移分级标准
+## 分级标准
 
-| 等级 | 判据 | 处置 |
+| 等级 | 判据 |
+|------|------|
+| **A** | 底层能力是 PyTorch 原生的，你的芯片只要接上 PyTorch 就有 |
+| **B** | 底层能力在通用生态里成熟（vLLM / NCCL / torch.compile），需要确认你的栈提供了哪一个 |
+| **C** | 需要先建设一个专门的底层能力，建设成本明确但不小 |
+| **D** | 依赖特定硬件特性，你的芯片没有的话这个领域就不成立 |
+
+---
+
+## 已建设（9 个）
+
+这些 skill 现在就能用。它们读 [硬件 profile](../hardware-profiles/_TEMPLATE.yaml)，填完 profile 即可生效。
+
+| Skill | 等级 | 底层依赖 | 知识来源 |
+|-------|------|---------|---------|
+| [model-train-log-visualization](../skills/model-train-log-visualization/) | A | 只需要训练日志是文本 | 通用日志解析与 matplotlib |
+| [model-train-oom-analysis](../skills/model-train-oom-analysis/) | A | PyTorch memory snapshot | PyTorch 官方显存分析文档 |
+| [model-infer-parallel-analysis](../skills/model-infer-parallel-analysis/) | B | 只需要知道硬件规格 | Megatron-LM / DeepSpeed 并行策略文献 |
+| [model-infer-runtime-debug](../skills/model-infer-runtime-debug/) | B | 设备同步 API + 错误信息 | 异步执行调试的通用方法 |
+| [model-infer-migrator](../skills/model-infer-migrator/) | B | 目标推理框架的接入契约 | HuggingFace / vLLM 模型接入实践 |
+| [model-infer-kvcache](../skills/model-infer-kvcache/) | B | 分页 attention 算子 | vLLM PagedAttention 论文与实现 |
+| [model-infer-graph-mode](../skills/model-infer-graph-mode/) | B | 图捕获或 torch.compile | PyTorch CUDA Graph / Dynamo 官方文档 |
+| [model-infer-multi-stream](../skills/model-infer-multi-stream/) | B | Stream / Event | CUDA 流并发模型 |
+| [model-infer-perf-breakdown](../skills/model-infer-perf-breakdown/) | B | 任一能导出 kernel 时间线的 profiler | 自定义，配 [统一 kernel schema](../tools/profiler_adapter/README.md) |
+
+---
+
+## 待建设（12 个）
+
+按"缺的是什么"分组。每组的详细分析在 [`pending/`](pending/) 下。
+
+### 组 1：缺一个够用的 profiler（4 个）
+
+这四个领域的输入都是性能数据。你的 profiler 能导出什么，直接决定它们能做到什么程度。
+
+| 领域 | 等级 | 最低要求 | 理想要求 |
+|------|------|---------|---------|
+| [性能数据采集](pending/perf-profiling.md) | C | kernel 名 + 时长 + 流 ID | 外加流水线利用率计数器 |
+| [精度问题诊断（推理）](pending/infer-precision-debug.md) | C | 能逐层 dump 张量 | 外加 attention 算子的参数契约文档 |
+| [图结构与融合机会分析](pending/graph-fusion-analysis.md) | B | 能导出计算图 IR | 外加 kernel 耗时，用于给子图排序 |
+| [量化接入](pending/quantization.md) | B | 知道支持哪些量化格式 | 外加量化算子的生效验证手段 |
+
+### 组 2：缺一套精度 dump 与比对工具（3 个）
+
+训练精度诊断三件套。方法论（随机性契约、复现门禁、证据分级）是公开可得的工程实践，但日常执行离不开一个能按调用实例对齐的 dump + 比对工具。CUDA 生态**没有**开源的对等物，各家都是自建。
+
+| 领域 | 等级 | 没有工具时 | 有工具后 |
+|------|------|-----------|---------|
+| [训练结果不可复现](pending/train-precision-determinism.md) | C | 能查随机性契约，查不出首个差异点 | 完整可用 |
+| [训练出现 NaN / Inf](pending/train-precision-nonfinite.md) | C | `detect_anomaly` 能兜住一部分 | 完整可用 |
+| [训练与标杆数值不一致](pending/train-precision-mismatch.md) | C | 只能看 loss 曲线级别 | 完整可用 |
+
+三者共用同一套底座，建议**一次性建设**。见 [精度工具栈建设方案](pending/_precision-toolchain.md)。
+
+### 组 3：缺特定硬件能力（3 个）
+
+| 领域 | 等级 | 需要的硬件能力 | 没有的话 |
+|------|------|--------------|---------|
+| [权重预取](pending/weight-prefetch.md) | C | 以数据依赖为栅栏的片上缓存预取 | 领域不成立，退化为 roofline 分析 |
+| [子图二进制融合](pending/subgraph-fusion.md) | C/D | 编译器把标注范围编成单个 kernel | 退化为图捕获，与 graph-mode 重复 |
+| [融合算子替换](pending/fused-op-substitution.md) | C | 一个成规模的融合算子库 | 流程可用但无算子可换 |
+
+### 组 4：建议直接对接生态而非自建（2 个）
+
+| 领域 | 等级 | 理由 |
 |------|------|------|
-| **A** | 方法论与工具都基本可用，改名即可 | 直接迁移 |
-| **B** | 方法论通用，需替换 API 与工具链引用 | 迁移，厂商部分收敛到 profile |
-| **C** | 深度绑定硬件架构或专有工具栈，需重新设计 | 保留，写迁移分析文档 |
-| **D** | 依赖目标芯片没有的硬件特性，迁移无意义 | 保留，记录技术本质备查 |
-
-"保留价值"一栏是**迁移后仍然有效的内容占原 skill 的比例估计**，依据是逐文件审读，不是行数统计。
+| [并行切分实施](pending/parallel-impl.md) | C | Megatron-LM 和 vLLM 已有成熟实现，自己写一套切分层投入产出比低。建议把精力放在让你的通信库适配它们 |
+| [端侧部署](pending/edge-deployment.md) | D | 源仓对应的是手机 NPU 的离线模型转换与打包，与云侧训推芯片无共同基础。除非你有端侧产品线，否则不必建 |
 
 ---
 
-## 已迁移（9 个）
+## 四个贯穿性判断
 
-| Skill | 等级 | 保留价值 | 迁移时做了什么 |
-|-------|------|---------|---------------|
-| [model-train-log-visualization](../skills/model-train-log-visualization/) | A | ~90% | 日志正则改为 profile 驱动，脚本逻辑未动 |
-| [model-train-oom-analysis](../skills/model-train-oom-analysis/) | B | ~75% | OOM 来源分类表改为 profile 驱动；去掉 workspace allocator 这一昇腾独有分支的硬假设 |
-| [model-infer-parallel-analysis](../skills/model-infer-parallel-analysis/) | B | ~75% | 互联带宽、显存规格改为读 profile；保留全部决策树与估算公式 |
-| [model-infer-runtime-debug](../skills/model-infer-runtime-debug/) | B | ~65% | 保留同步二分定位骨架；错误码表整表换成 profile 的 `error_signatures` |
-| [model-infer-multi-stream](../skills/model-infer-multi-stream/) | B | ~60% | 保留 DAG 拆解与 `overlap_pct` 真假并行判据；实现层对位到标准 Stream/Event；控核部分降级为可选能力 |
-| [model-infer-perf-breakdown](../skills/model-infer-perf-breakdown/) | B | ~60% | 定义统一 kernel schema + 适配层，脚本算法未动 |
-| [model-infer-migrator](../skills/model-infer-migrator/) | B | ~55% | 保留场景分流与基线采集；框架接入契约改为 profile 的 `inference_framework` |
-| [model-infer-kvcache](../skills/model-infer-kvcache/) | B | ~50% | 保留 PagedAttention 地址映射与 metadata 生命周期；FA 调用改为能力探测 |
-| [model-infer-graph-mode](../skills/model-infer-graph-mode/) | B | ~45% | 保留 Decode 上图与静态化方法论；GE/npugraph_ex 双后端收敛为单一图捕获抽象 |
+审读完整个能力清单后，有四件事影响的不止一个领域，值得单独拿出来说。
+
+**一、profiler 产物格式是最大的单点阻塞。** 组 1 的四个领域、加上已建设的 perf-breakdown 和 multi-stream 的验证环节，输入都是性能数据。一个格式不定，六个地方都要打补丁。本仓库为此先定义了[统一 kernel schema](../tools/profiler_adapter/README.md)：skill 只认这个 schema，你的 profiler 怎么导出由一个适配器负责。先把适配器写出来，六个领域一起解锁。
+
+**二、方法论的价值远高于实现的可移植性。** 这类工程 skill 真正值钱的是判据和纪律，比如"流 ID 切对了不等于真的并行，要用时间窗重叠率验证"，"异步执行下报错的位置不是出错的位置，要用同步点二分"。这些话在哪个芯片上都成立。不值钱的是算子名、列名、错误码——它们必然要重建，也必然只能靠你自己填。所以本仓库的 skill 一律把前者写进正文，把后者赶进 profile。
+
+**三、要警惕架构假设被悄悄继承。** 有些优化规则的前提是特定的硬件结构，换个架构就不成立。典型例子是"按流限制计算核数量"这类手段——它预设了计算单元可以被细粒度划分给不同的流，SIMT 架构上没有对等的一等公民 API。本仓库凡是涉及这类规则的地方都标注了前提条件，不要机械套用。
+
+**四、通信与计算的融合是通用生态的真空地带。** 把 all-to-all 和 grouped GEMM 编进同一个算子，可以省掉中间结果的往返。CUDA 侧没有一等公民支持，只能用多流手工重叠，或依赖 DeepEP 这类专用库。MoE 相关的优化都会碰到这堵墙，是自研芯片有机会做出差异化的地方。
 
 ---
 
-## 保留待议（12 个）
+## 怎么开始
 
-按"迁移阻塞的性质"分组。每个 skill 的详细分析在 [`pending-migration/`](pending-migration/) 下。
-
-### 组 1：等一个前置能力就能迁（4 个）
-
-这些 skill 的方法论没问题，卡在一个明确的前置条件上。前置条件满足后迁移是机械工作。
-
-| Skill | 等级 | 卡在哪 | 前置条件 |
-|-------|------|--------|---------|
-| [model-infer-profiling](pending-migration/model-infer-profiling.md) | C | 采集 API 与产物 schema 全是昇腾专有 | 确定你的 profiler 能否产出含流水线计数器的 kernel 表 |
-| [model-infer-precision-debug](pending-migration/model-infer-precision-debug.md) | C | 排查流程通用，但附录是昇腾 FA 参数契约 | 确定你的 attention 算子参数契约 |
-| [model-recommend-analysis](pending-migration/model-recommend-analysis.md) | B | 子图挖掘算法完全通用，解析层绑 MindStudio + GE pbtxt | 同 profiling；外加确定你的图 IR 导出格式 |
-| [model-infer-quantization](pending-migration/model-infer-quantization.md) | B | 工作流通用，量化 runtime 与权重布局绑昇腾 | 确定你的量化格式与是否需要特殊权重布局 |
-
-### 组 2：需要自建工具栈（3 个）
-
-训练精度三件套。方法论（随机性契约、门禁、证据分级）质量很高且完全通用，但日常执行路径几乎等同于 msprobe 操作手册。
-
-| Skill | 等级 | 不建工具的价值 | 建了工具的价值 |
-|-------|------|--------------|--------------|
-| [model-train-precision-determinism](pending-migration/model-train-precision-determinism.md) | C | ~50% | ~75% |
-| [model-train-precision-nonfinite](pending-migration/model-train-precision-nonfinite.md) | C | ~55% | ~80% |
-| [model-train-precision-numerical-mismatch](pending-migration/model-train-precision-numerical-mismatch.md) | C–D | ~40% | ~73% |
-
-三者共用一套 dump/比对底座，建议**合并评估、一次性建设**。详见 [精度三件套合并分析](pending-migration/_train-precision-trio.md)。
-
-### 组 3：依赖目标芯片可能没有的硬件能力（3 个）
-
-| Skill | 等级 | 依赖的能力 | 若你的芯片没有 |
-|-------|------|-----------|--------------|
-| [model-infer-prefetch](pending-migration/model-infer-prefetch.md) | C | 以 tensor 依赖为栅栏的片上缓存预取 | 整个 skill 失去落点，只剩 roofline 判据 |
-| [model-infer-superkernel](pending-migration/model-infer-superkernel.md) | C/D | 用 scope 标注、编译器把子图编成单个二进制 kernel | 退化为图捕获，与 graph-mode 重复 |
-| [model-infer-fusion](pending-migration/model-infer-fusion.md) | C | 一个成规模的融合算子目录 | 流程仍可用，但需先建自己的算子目录 |
-
-### 组 4：建议不迁（2 个）
-
-| Skill | 等级 | 原因 |
-|-------|------|------|
-| [model-infer-parallel-impl](pending-migration/model-infer-parallel-impl.md) | C | MoE 并行主路径建在 MC2 通信计算融合算子上，这是昇腾独有能力。切分抽象本身在 Megatron/vLLM 里已有更成熟的实现，重写不如直接对接 |
-| [model-infer-harmony](pending-migration/model-infer-harmony.md) | D | 麒麟 9030 端侧 ASR 的 omg/omc/CANNPAK 全链路，与云侧类 CUDA 芯片无共同基础。仅抽象 PTQ 方法论有参考价值 |
-
----
-
-## 跨 skill 的共性发现
-
-审读 21 个 skill 后，有四件事反复出现，它们决定了迁移的真实成本。
-
-**一、方法论的质量远高于实现的可迁移性。** 几乎每个 skill 的决策树、检查清单、验证纪律都是厂商中立的，写得也扎实——比如 multi-stream 的"Stream ID 切对不等于物理并行，要用 `overlap_pct` 验证"，runtime-debug 的"异步执行下报错点不等于出错点，要用同步检查点二分"。这些是真正的资产。被绑死的是算子名、列名、错误码这些查表项。所以迁移的正确做法是**抽出方法论、重建查表项**，而不是逐行改写。
-
-**二、profiler 产物格式是最大的单点阻塞。** `model-infer-profiling` 产出的 47 列 `kernel_details.csv` 是 `model-infer-perf-breakdown`、`model-recommend-analysis`、`model-infer-multi-stream` 验证环节、`model-infer-prefetch` 判据的共同输入。这一个格式不解决，四个 skill 都半残。所以本次迁移把它单独抽成了 [统一 kernel schema](../tools/profiler_adapter/README.md)。
-
-**三、达芬奇架构的 Cube/Vector 分离是若干规则的隐藏前提。** 控核（`limit_core_num`）、AIC/AIV 利用率判据、MIX_AIC/MIX_AIV 任务类型，这些在 SIMT 架构上没有对应物。涉及这些的规则不能机械改名，必须判断在你的架构上是否还成立。
-
-**四、"通信计算融合"（MC2）是 CUDA 生态的真空地带。** 昇腾把 all-to-all 与 grouped GEMM 编进一个算子，CUDA 侧只能靠多流手工重叠或 DeepEP 这类专用库。涉及 MoE 并行的 skill 都受此影响。
-
----
-
-## 下一步
-
-需要你拍板的问题集中在 [MIGRATION-DISCUSSION.md](MIGRATION-DISCUSSION.md)。那里列了 12 个待议 skill 的具体选项和各自代价，按"回答后能解锁多少 skill"排了序。
-
-最省力的起点是**填一份 [硬件 profile](../hardware-profiles/_TEMPLATE.yaml)**。已迁移的 9 个 skill 全部读它，填完即可用；填的过程本身也会暴露出哪些能力缺口会卡住剩下 12 个。
+1. **填 [硬件 profile](../hardware-profiles/_TEMPLATE.yaml)**。已建设的 9 个 skill 全部读它。参照 [cuda-reference.yaml](../hardware-profiles/cuda-reference.yaml) 填写。填的过程会自然暴露出能力缺口
+2. **读 [DISCUSSION.md](DISCUSSION.md)**，回答里面的问题。问题按"回答后能解锁几个领域"排了序
+3. 从 **profiler 适配器**开始建设，它的杠杆率最高
