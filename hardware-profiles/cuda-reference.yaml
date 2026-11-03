@@ -486,8 +486,8 @@ unknown_or_unsupported:
   - capability: collective.fused_comm_compute_ops
     status: not_supported
     reason: >
-      无 MC2 类通信计算融合算子。MoE dispatch/combine 与计算的重叠需靠
-      多流 + DeepEP 这类库手工编排。
+      无把集合通信与 GEMM 编进同一个 kernel 的融合算子。MoE dispatch/combine
+      与计算的重叠需靠多流 + DeepEP 这类库手工编排。
     affects: ["pending/parallel-impl", "pending/fused-op-substitution"]
 
   - capability: graph.kernel_fusion_codegen
