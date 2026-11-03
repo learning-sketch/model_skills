@@ -240,8 +240,8 @@ kernels:
     weight_layout_requirement: null   # 无强制特殊布局（Marlin 等 kernel 有自己的预处理）
 
   memory:
-    # CUDA 没有与 torch_npu.npu_prefetch 语义相同的 API。
-    # cudaMemPrefetchAsync 作用于 Unified Memory 的页迁移，不是"把权重提前搬进片上缓存"。
+    # CUDA 没有"以数据依赖为栅栏、把权重提前搬进片上缓存"的 API。
+    # cudaMemPrefetchAsync 作用于 Unified Memory 的页迁移，语义不同。
     # 语义上更接近的是 L2 persistence（cudaAccessPolicyWindow），但那是驻留策略
     # 而非以 tensor 依赖为栅栏的预取。详见
     # docs/pending-migration/model-infer-prefetch.md
@@ -310,7 +310,7 @@ diagnostics:
 precision_tools:
   _status: verified
 
-  # CUDA 生态没有与华为 msprobe 对等的开源框架级 dump/比对工具。
+  # CUDA 生态没有开源的框架级 dump / 比对工具。
   # 常见做法是自建 hook dump + 自写比对，或使用各家内部精度平台。
   dump_framework:
     available: false
@@ -368,7 +368,7 @@ unknown_or_unsupported:
   - capability: kernels.memory.weight_prefetch
     status: not_supported
     reason: >
-      CUDA 无与 torch_npu.npu_prefetch 语义等价的 API。cudaMemPrefetchAsync
+      CUDA 无"以数据依赖为栅栏的片上缓存预取"API。cudaMemPrefetchAsync
       面向 Unified Memory 页迁移，L2 persistence 是驻留策略，二者都不是
       "以 tensor 依赖为栅栏、把权重提前搬进片上缓存"。
     affects: ["model-infer-prefetch"]
@@ -390,7 +390,7 @@ unknown_or_unsupported:
   - capability: precision_tools.dump_framework
     status: not_supported
     reason: >
-      无 msprobe 对等的开源 dump/比对框架。需基于 PyTorch hook 自建，
+      无开源的框架级 dump/比对工具。需基于 PyTorch hook 自建，
       或接入内部精度平台。
     affects:
       - "model-train-precision-determinism"

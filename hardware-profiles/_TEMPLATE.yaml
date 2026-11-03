@@ -154,7 +154,8 @@ collective:
     exec_timeout: null
     interface_select: null        # 例: "NCCL_SOCKET_IFNAME"
     debug_level: null             # 例: "NCCL_DEBUG"
-  # 是否有"通信与计算融合"的算子（昇腾 MC2 那一类）
+  # 是否有把集合通信与矩阵计算编进同一个算子的能力。
+  # 有这类算子就能省掉中间结果的往返，是 MoE 并行的关键优化点。
   # 影响 model-infer-parallel-impl 的 MoE 并行路径能否迁移
   fused_comm_compute_ops:
     available: null               # true / false
@@ -306,11 +307,11 @@ kernels:
     dynamic_quant: null
     # 支持的量化格式
     supported_formats: []         # 例: ["w8a8", "w8a16", "w4a16"]
-    # 权重是否需要特殊内存布局（昇腾 NZ 那种）
+    # 权重是否需要转换成特殊内存布局才能被量化算子接受
     weight_layout_requirement: null
 
   memory:
-    # 软件预取。对应 torch_npu.npu_prefetch
+    # 软件预取：把权重提前搬进片上缓存
     # 决定 model-infer-prefetch 能否迁移
     weight_prefetch:
       available: null             # true / false
@@ -328,7 +329,7 @@ kernels:
 diagnostics:
   _status: unknown
 
-  # 设备状态查询命令，对应 nvidia-smi / npu-smi
+  # 设备状态查询命令，CUDA 侧对应 nvidia-smi
   smi_command: null               # 例: "nvidia-smi"
   smi_query_memory: null          # 例: "nvidia-smi --query-gpu=memory.used --format=csv"
 
@@ -369,7 +370,7 @@ diagnostics:
 precision_tools:
   _status: unknown
 
-  # 是否有框架级的 dump / 比对工具（对应华为 msprobe）
+  # 是否有框架级的张量 dump / 比对工具（精度诊断的执行底座）
   dump_framework:
     available: null               # true / false
     name: null
