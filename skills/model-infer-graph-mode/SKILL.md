@@ -25,7 +25,7 @@ description: 把 LLM 推理从逐算子下发（eager）改造成图模式执行
 | `graph.graph_capture.constraints.dynamic_control_flow_forbidden` | 决定静态化清单第 3 项是否为硬约束 | 保守按 `true` 处理 |
 | `graph.graph_capture.constraints.collective_ops_supported` | 多卡下集合通信能否进图，决定上图边界要不要在通信处切开 | 按"不支持"处理，把通信点作为图的切分边界，并标注该假设 |
 | `graph.kernel_fusion_codegen.available` | 是否还有"子图编成单 kernel"这条更激进的路径 | 不提这条路径 |
-| `pytorch.device_namespace` / `api.synchronize` | 计时与同步 | 阻塞 |
+| `pytorch.device_namespace` / `pytorch.api.synchronize` | 计时与同步 | 阻塞 |
 | `pytorch.api.stream_class` | 部分图捕获实现要求在非默认流上捕获 | 若图捕获路径需要而该字段为 `null`，向用户确认捕获所需的流上下文 |
 | `pytorch.uses_privateuse1_backend` | 为真时，编译器后端与若干框架原生特性的可用性需逐项确认，不能假定与原生后端等同 | 为 `null` 时按需确认，不默认为 `false` |
 | `pytorch.api.memory_allocated` / `max_memory_allocated` | 衡量静态缓冲区与多桶图带来的显存增量 | 显存代价只能估算，不能实测 |
@@ -258,6 +258,23 @@ def run(real_input):
 7. **三段验证的完整数据**：三段各自的判据与实测值，一段不过就不得给出"完成"结论
 8. **开关与回退**：开关名、默认值、回退触发条件
 9. **残留风险**：因 profile 字段缺失而采用的保守假设清单、`_status` 为 `assumed` 的字段、未覆盖的输入形态
+
+## 已知的 profile 缺口
+
+`_TEMPLATE.yaml` 当前没有以下字段，而本技能的对应步骤需要它们。遇到时**向用户确认，不要臆造**，并把确认结果建议补进 profile。
+
+| 建议字段路径 | 本技能哪一步要用 | 没有时的替代做法 |
+|---|---|---|
+| `graph.graph_capture.capture_context_api` / `replay_api` | Step 2 的代码骨架。`graph_capture.api` 只登记了类名，没登记"怎么进入捕获"与"怎么重放" | 骨架留空待填，无法给出可直接跑的代码 |
+| `graph.graph_capture.warmup_iters_required` | 静态化清单第 6 项。捕获前需要几次预热执行 | 保守多预热若干次，无法判断是否足够 |
+| `graph.graph_capture.memory_pool_api` | 静态化清单第 6 项。捕获是否需要专属显存池、怎么跨图共享池 | 每张图独占缓冲，分桶时显存增量成倍放大 |
+| `graph.graph_capture.max_graphs` / `max_nodes_per_graph` | Step 2 的分桶数量上限 | 只能试到失败为止才知道上限 |
+| `graph.graph_capture.constraints.rng_capture_supported` | 静态化清单第 7 项。随机数状态能否进图 | 一律把采样移出图，放弃这部分收益 |
+| `graph.graph_capture.constraints.multi_stream_supported` | 与 `model-infer-multi-stream` 叠加时 | 不建议叠加，两项优化只能二选一地先各自验证 |
+| `graph.dynamic_shape_supported` | Step 4 的 `mark_dynamic` 方案 | 只能走分桶，桶数多时显存与启动成本偏高 |
+| `graph.debug_backends` | Step 5 的前后端定界阶梯 | 若你的栈不提供上游的 `eager` / `aot_eager`，定界失效，只能整体二分 |
+| `graph.compile_cache_dir` | 排查陈旧编译缓存导致的"改了代码不生效" | 该类问题无法快速排除 |
+| `graph.recompile_limit_config` | Step 4 的重编译上限 | "跑着跑着突然变慢"这一症状只能靠日志倒推 |
 
 ## 知识来源
 

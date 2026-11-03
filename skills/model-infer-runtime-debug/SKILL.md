@@ -244,6 +244,19 @@ def checkpoint(tag: str):
 6. **修复**：采用了哪种修复模式、改了什么、代价多大。若为临时缓解须明确标注
 7. **残留风险**：未排除的可能性、因 profile 字段缺失而跳过的检查项、`_status` 为 `assumed` 的字段清单
 
+## 已知的 profile 缺口
+
+`_TEMPLATE.yaml` 当前没有以下字段，而本技能的对应步骤需要它们。遇到时**向用户确认，不要臆造**，并把确认结果建议补进 profile。
+
+| 建议字段路径 | 本技能哪一步要用 | 没有时的替代做法 |
+|---|---|---|
+| `diagnostics.launch_blocking_env` | Step 4 的全局同步化。以 CUDA 为例是 `CUDA_LAUNCH_BLOCKING=1` 这类让下发变同步的环境变量 | 退化为手工插同步检查点，定位慢一个数量级 |
+| `diagnostics.device_assert_enable` | 非法内存访问支线。设备侧断言的开关，开启后越界能给出可读信息而非笼统的内存错误 | 只能靠二分 + 手工 `assert` 复现 |
+| `diagnostics.smi_query_processes` | Step 5 的残留进程排查。查询占用设备的进程及其显存 | 让用户自己用设备管理工具看，该项在报告中标为未排除 |
+| `diagnostics.device_health_query` | 设备健康支线。查掉卡、硬件错误计数 | 无法区分软件故障与硬件故障 |
+| `kernels.*.constraints` | Step 4 第 4 级。各算子的输入约束：dtype 组合、head_dim 取值集合、序列长度上限、对齐要求 | 定位到算子后无法判断输入是否越界，只能让用户查算子文档 |
+| `collective.default_timeout_seconds` | 多卡支线第 5 步。集合通信的默认超时值 | 无法判断"超时阈值设得过紧"这一根因 |
+
 ## 知识来源
 
 本技能的方法论全部来自公开技术资料与通用工程实践，不含任何厂商专有信息：
