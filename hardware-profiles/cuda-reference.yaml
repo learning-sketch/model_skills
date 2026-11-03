@@ -43,11 +43,25 @@ pytorch:
     set_per_process_memory_fraction: "torch.cuda.set_per_process_memory_fraction"
     record_memory_history: "torch.cuda.memory._record_memory_history"
     dump_memory_snapshot: "torch.cuda.memory._dump_snapshot"
+    mem_get_info: "torch.cuda.mem_get_info"      # 返回 (free, total)，含其他进程占用
+    memory_reserved: "torch.cuda.memory_reserved"
     stream_class: "torch.cuda.Stream"
     event_class: "torch.cuda.Event"
     stream_context: "torch.cuda.stream"
     record_stream: "Tensor.record_stream"
+    current_stream: "torch.cuda.current_stream"
+    default_stream: "torch.cuda.default_stream"
+    wait_stream: "Stream.wait_stream"
+    pin_memory: "Tensor.pin_memory"
+    manual_seed: "torch.cuda.manual_seed_all"
     deterministic_api: "torch.use_deterministic_algorithms"
+
+  allocator_env_var: "PYTORCH_CUDA_ALLOC_CONF"
+
+  op_coverage:
+    # CUDA 后端覆盖度高，未实现的算子直接抛 NotImplementedError，不会静默回落
+    fallback_policy: "error"
+    check_command: null
 
   # CUDA 是 PyTorch memory snapshot 的主要目标平台，格式即上游标准
   memory_snapshot_format_compatible: true
@@ -60,7 +74,11 @@ devices:
   models:
     - model: "H100 SXM5 80GB"
       memory_gb: 80
+      # CUDA context 与 cuBLAS/cuDNN 句柄的常驻开销，随库版本与用法浮动。
+      # 需要实测，这里不填一个看似精确的数字
+      runtime_reserved_gb: null
       memory_bandwidth_gb_s: 3350      # 3.35 TB/s HBM3
+      supported_dtypes: ["fp32", "tf32", "fp16", "bf16", "fp8_e4m3", "fp8_e5m2", "int8"]
       compute:                          # 均为 dense（非 2:4 稀疏）值
         fp32_tflops: 67
         tf32_tflops: 494.5
@@ -76,12 +94,25 @@ devices:
       cache:
         l2_mb: 50
         shared_mem_per_unit_kb: 228     # 每 SM 可配置共享内存上限
+      concurrency:
+        # CUDA 的软件流会被映射到数量有限的硬件通道，具体数量不公开且随架构变化。
+        # 实际表现是：超过一定并发流数后，额外的流不再带来重叠
+        hardware_queue_count: null
+        copy_engine_count: null         # 需用 cudaGetDeviceProperties 的 asyncEngineCount 查
+        compute_copy_concurrent: true   # 拷贝引擎独立于 SM，可与计算并发
+        stream_priority_supported: true # cudaStreamCreateWithPriority
+        # SIMT 架构没有"按流分配固定算力份额"的一等公民 API。
+        # MPS 的 active thread percentage 是进程级配额，不是流级，语义不同
+        stream_compute_partitioning: false
 
 # ------------------------------------------------------------------------------
 # 互联与集合通信
 # ------------------------------------------------------------------------------
 interconnect:
   _status: verified
+  cluster_nodes: null                 # 取决于你的集群规模
+  bandwidth_direction: "unidirectional"
+  bandwidth_scope: "per_card_aggregate"
   intra_node:
     name: "NVLink 4.0 + NVSwitch"
     bandwidth_gb_s: 450               # 单向。双向总带宽 900 GB/s
@@ -90,6 +121,7 @@ interconnect:
   inter_node:
     name: "InfiniBand NDR 400Gb/s"
     bandwidth_gb_s: 50                # 400 Gb/s ≈ 50 GB/s，每卡一张网卡时
+    nics_per_node: 8                  # 典型 8 卡节点配 8 张 NDR 网卡
 
 collective:
   _status: verified
@@ -102,13 +134,29 @@ collective:
     - all_to_all
     - broadcast
     - send_recv
+  capabilities:
+    # dist.all_to_all_single 支持 input_split_sizes / output_split_sizes
+    uneven_all_to_all: true
+    bf16_reduce_native: true
+    async_op_supported: true          # async_op=True 返回 Work 句柄
+    # NCCL 会按拓扑与消息大小自适应选择算法，规约顺序不保证跨运行一致。
+    # 需要可复现时要固定 NCCL_ALGO / NCCL_PROTO 并钉死 rank 数与消息大小
+    reduce_order_deterministic: false
+    noncontiguous_input_supported: false   # 需调用方先 .contiguous()
+  perf:
+    # 实效值强依赖消息大小、拓扑与算法，必须按你的集群实测。
+    # 填一个看似精确的数字比留空更有害
+    latency_us: null
+    bandwidth_efficiency: null
+  default_timeout_seconds: 600        # PyTorch ProcessGroupNCCL 默认 10 分钟
+  launcher: "torchrun"
   env_vars:
     buffer_size: "NCCL_BUFFSIZE"
     connect_timeout: "NCCL_COMM_TIMEOUT"       # 另见 TORCH_NCCL_BLOCKING_WAIT
     exec_timeout: "TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"
     interface_select: "NCCL_SOCKET_IFNAME"
     debug_level: "NCCL_DEBUG"
-  # CUDA 生态没有昇腾 MC2 那种"通信+计算编成一个算子"的一等公民能力。
+  # CUDA 生态没有"把集合通信与矩阵计算编进同一个算子"的一等公民能力。
   # 近似做法是用多流把 NCCL 与 GEMM overlap，或用 DeepEP 这类库做 MoE 专用重叠。
   fused_comm_compute_ops:
     available: false
@@ -126,7 +174,7 @@ profiler:
 
   output:
     root_dir_pattern: "*.nsys-rep"
-    # torch.profiler 没有昇腾那种开箱即用的 kernel_details.csv。
+    # torch.profiler 不直接产出 kernel 明细表。
     # 需要用 nsys stats 导出，或从 chrome trace 自行聚合。
     # 见 tools/profiler_adapter/ 的说明。
     kernel_table_file: null
@@ -148,12 +196,17 @@ profiler:
     block_dim: "args.grid"            # 需与 args.block 一起换算
     input_shapes: "args.Input Dims"   # 需 record_shapes=True
     output_shapes: null
+    rank_id: null                     # chrome trace 无此列，多卡需按文件分开处理
+    hardware_queue_id: null           # CUDA 不暴露硬件通道号，只能看到软件流
+    phase: null                       # 需用 record_function 自行标注 prefill/decode
 
   task_type_values:
     compute: ["kernel"]
     communication: ["nccl"]           # NCCL kernel 名以 nccl 开头，需按名字前缀二次识别
     memory: ["gpu_memcpy", "gpu_memset"]
-    host_fallback: ["cpu_op"]         # 语义不同于昇腾 AI_CPU，仅作近似
+    # 注意 cpu_op 是主机侧算子派发记录，不等价于"该算子无设备实现而掉回主机算"。
+    # 适配器会排除它，否则会与设备 kernel 重复计时
+    host_fallback: ["cpu_op"]
 
   hardware_counters:
     available: true                   # 需用 Nsight Compute (ncu) 单独采集
@@ -162,6 +215,10 @@ profiler:
     tensor_core_utilization: "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active"
     memory_bound_threshold: 0.6
     low_utilization_threshold: 0.3
+    utilization_denominator: "peak_spec"   # ncu 的 pct_of_peak_sustained 口径
+    # ncu 默认会重放 kernel 以采集多组计数器，因此 counters 与完整 timeline
+    # 采不到同一次运行里，需要 nsys（timeline）+ ncu（counters）两次采集后合并
+    requires_kernel_replay: true
 
 # ------------------------------------------------------------------------------
 # 图模式 / 编译
@@ -173,17 +230,31 @@ graph:
 
   torch_compile_backend: "inductor"
   torch_compile_supported: true
+  dynamic_shape_supported: true              # torch._dynamo.mark_dynamic
+  debug_backends: ["eager", "aot_eager", "inductor"]
+  compile_cache_dir: "TORCHINDUCTOR_CACHE_DIR"   # 环境变量，默认在 /tmp 下
+  recompile_limit_config: "torch._dynamo.config.cache_size_limit"
 
   graph_capture:
     available: true
     api: "torch.cuda.CUDAGraph"
+    capture_context_api: "torch.cuda.graph"
+    replay_api: "CUDAGraph.replay"
     torch_compile_mode: "reduce-overhead"
+    # 官方文档建议在侧流上预热若干次后再捕获，具体次数取决于有多少
+    # 一次性初始化（cuBLAS 句柄、autotune）需要跑完
+    warmup_iters_required: 3
+    memory_pool_api: "torch.cuda.graph_pool_handle"
+    max_graphs: null                         # 无硬上限，受显存与句柄资源约束
+    max_nodes_per_graph: null
     constraints:
       static_shape_required: true
       static_address_required: true          # 输入输出需在固定的静态缓冲区
       host_sync_forbidden: true              # 捕获期禁止 .item() / .cpu() 等
       dynamic_control_flow_forbidden: true
       collective_ops_supported: true         # NCCL 可入图，需注意捕获时的通信器状态
+      rng_capture_supported: true            # PyTorch 的 CUDA RNG 支持图捕获
+      multi_stream_supported: true           # 侧流需用事件与捕获流建立依赖
 
   # CUDA 没有"用 scope 标注一段子图、由编译器编成单个二进制 kernel"的
   # 一等公民 API。最接近的是 Inductor 的 kernel fusion（自动、无 scope 标注）
@@ -192,6 +263,7 @@ graph:
     available: "partial"
     api: "torch.compile (Inductor 自动融合)"
     scope_annotation: null
+    exclusive_with_graph_capture: false      # reduce-overhead 模式下两者叠加使用
     notes: >
       Inductor 会自动融合 pointwise/reduction，但不提供用户标注的融合范围，
       也不把 GEMM 这类库调用融进同一个二进制。若需要"一段子图一个 kernel"，
@@ -208,8 +280,23 @@ kernels:
     paged_attention: "vllm._custom_ops.paged_attention_v2"   # 或 flashinfer
     sdpa_available: true
     kv_cache_layout: "NHD"            # vLLM 默认；FlashInfer 支持 NHD/HND
+    k_v_layout_same: true
+    supported_block_sizes: [8, 16, 32]      # vLLM 常用取值，随 kernel 实现而异
+    kv_cache_dtype_supported: ["fp16", "bf16", "fp8_e4m3", "fp8_e5m2"]
+    max_head_dim: 256                 # FlashAttention 2/3 的上限
+    supported_head_dims: [64, 128, 256]
+    block_granular_read: true         # 分页 kernel 按整块读取，回收块需清尾部
+    chunked_prefill_supported: true
+    prefix_cache_supported: true
+    metadata_dtype: "int32"
+    metadata_device: "device"
+    block_table_padding_value: 0      # vLLM 约定；越界块号由 seq_len 裁掉
     mla_support: "partial"            # FlashMLA / FlashInfer 有实现，非官方统一 API
+    mla_kv_shardable: false           # MLA 的压缩 KV 各 TP rank 需各存一份
     supported_mask_modes: ["causal", "sliding_window", "custom_mask", "alibi"]
+    constraints:
+      dtype: "Q/K/V 需同为 fp16 或 bf16；fp32 走 SDPA 兜底"
+      alignment: "head_dim 需为 8 的倍数"
 
   moe:
     grouped_gemm: "grouped_gemm.ops.gmm"        # 或 vLLM fused_moe / Triton
@@ -217,19 +304,26 @@ kernels:
     token_permute: "vllm.model_executor.layers.fused_moe"
     token_unpermute: "vllm.model_executor.layers.fused_moe"
     expert_parallel_dispatch: "deep_ep"         # DeepEP，需单独安装
+    constraints:
+      expert_divisibility: "专家数需能被 EP size 整除"
 
   normalization:
     rmsnorm: "vllm._custom_ops.rms_norm"        # 或 apex / 自写 Triton
     layernorm: "torch.nn.functional.layer_norm"
     fused_add_norm: "vllm._custom_ops.fused_add_rms_norm"
+    constraints: {}
 
   activation:
     swiglu: "vllm._custom_ops.silu_and_mul"
     geglu: "vllm._custom_ops.gelu_and_mul"
+    constraints:
+      layout: "输入为 gate 与 up 在最后一维拼接，顺序不可颠倒"
 
   rope:
     apply_rotary: "vllm._custom_ops.rotary_embedding"
     interleaved_supported: true
+    constraints:
+      pairing: "interleaved 与 half-split 两种配对方式不兼容，需与权重训练时一致"
 
   quantization:
     int8_gemm: "torch._int_mm"
@@ -237,14 +331,22 @@ kernels:
     int4_gemm: null                   # 无 PyTorch 原生路径，需 Marlin / AWQ kernel
     dynamic_quant: "vllm._custom_ops.scaled_int8_quant"
     supported_formats: ["w8a8", "w8a16", "w4a16", "fp8"]
+    scale_granularity: ["per_tensor", "per_channel", "per_group"]
+    supported_group_sizes: [32, 64, 128]    # AWQ / GPTQ 常用取值
+    accumulator_dtype: "int32"        # int8 路径；fp8 路径累加器为 fp32
+    requant_inside_kernel: false      # torch._int_mm 输出 int32，反量化在算子外
+    epilogue_fusion_supported: "partial"    # Marlin / CUTLASS 支持，torch 原生算子不支持
+    grouped_gemm_quantized: "partial" # vLLM fused_moe 有量化路径，非通用能力
     weight_layout_requirement: null   # 无强制特殊布局（Marlin 等 kernel 有自己的预处理）
+    constraints:
+      shape: "int8 GEMM 要求 K 维为 8 的倍数"
 
   memory:
     # CUDA 没有"以数据依赖为栅栏、把权重提前搬进片上缓存"的 API。
     # cudaMemPrefetchAsync 作用于 Unified Memory 的页迁移，语义不同。
     # 语义上更接近的是 L2 persistence（cudaAccessPolicyWindow），但那是驻留策略
     # 而非以 tensor 依赖为栅栏的预取。详见
-    # docs/pending-migration/model-infer-prefetch.md
+    # docs/pending/weight-prefetch.md
     weight_prefetch:
       available: false
       api: null
@@ -260,6 +362,12 @@ diagnostics:
 
   smi_command: "nvidia-smi"
   smi_query_memory: "nvidia-smi --query-gpu=memory.used,memory.total --format=csv"
+  smi_query_processes: "nvidia-smi --query-compute-apps=pid,used_memory --format=csv"
+  device_health_query: "nvidia-smi --query-gpu=ecc.errors.uncorrected.volatile.total --format=csv"
+  version_query_command: "nvidia-smi --query-gpu=driver_version --format=csv && python -c 'import torch; print(torch.__version__, torch.version.cuda)'"
+
+  launch_blocking_env: "CUDA_LAUNCH_BLOCKING=1"
+  device_assert_enable: null          # 设备侧 assert 默认启用，无独立开关
 
   error_signatures:
     device_timeout:
@@ -288,7 +396,7 @@ diagnostics:
       - "Tried to allocate"
       - "torch.OutOfMemoryError"
     # CUDA 的临时工作区由 caching allocator 统一管理，没有独立的 workspace
-    # allocator，因此不存在昇腾那种"workspace OOM"的独立分类。
+    # allocator，因此不存在独立的"workspace OOM"分类。
     workspace_allocator: []
     collective_buffer:
       - "NCCL WARN Cuda failure 'out of memory'"
@@ -356,12 +464,16 @@ training_framework:
 inference_framework:
   _status: assumed                    # 按你实际使用的框架改写
   name: "vLLM"
+  version: null                       # 填你实际使用的版本，接入契约随版本变动较大
   model_registry_path: "vllm/model_executor/models/registry.py"
   required_interfaces:
     - "forward(input_ids, positions, kv_caches, attn_metadata) -> hidden_states"
     - "compute_logits(hidden_states, sampling_metadata)"
     - "load_weights(weights: Iterable[Tuple[str, torch.Tensor]])"
   config_format: "python/json"
+  supported_parallelism: ["tp", "pp", "ep", "dp"]
+  attention_metadata_contract: "AttentionMetadata（含 block_tables / slot_mapping / seq_lens）"
+  kv_cache_allocation_entrypoint: "由 CacheEngine 统一分配并按层下发给模型"
   standalone_mode_supported: true
 
 unknown_or_unsupported:
@@ -371,21 +483,21 @@ unknown_or_unsupported:
       CUDA 无"以数据依赖为栅栏的片上缓存预取"API。cudaMemPrefetchAsync
       面向 Unified Memory 页迁移，L2 persistence 是驻留策略，二者都不是
       "以 tensor 依赖为栅栏、把权重提前搬进片上缓存"。
-    affects: ["model-infer-prefetch"]
+    affects: ["pending/weight-prefetch"]
 
   - capability: collective.fused_comm_compute_ops
     status: not_supported
     reason: >
       无 MC2 类通信计算融合算子。MoE dispatch/combine 与计算的重叠需靠
       多流 + DeepEP 这类库手工编排。
-    affects: ["model-infer-parallel-impl", "model-infer-fusion"]
+    affects: ["pending/parallel-impl", "pending/fused-op-substitution"]
 
   - capability: graph.kernel_fusion_codegen
     status: not_supported
     reason: >
       无用户可标注范围的"子图编成单个二进制 kernel"能力。Inductor 自动融合
       不覆盖 GEMM 库调用，也不接受 scope 标注。
-    affects: ["model-infer-superkernel"]
+    affects: ["pending/subgraph-fusion"]
 
   - capability: precision_tools.dump_framework
     status: not_supported
