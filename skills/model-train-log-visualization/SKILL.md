@@ -73,7 +73,7 @@ python scripts/parse_training_log.py <主日志> --profile <profile.yaml>
 
 重点看三处输出：
 
-- **命中的字段名**（`grad_norm<-grad norm` 这种）。确认每个指标是从你以为的那个字段抓来的。日志里同时有 `lm loss` 和 `val loss` 时，笼统的 `loss` 别名可能抓错，需要用 `--metric-key loss=lm_loss` 钉死
+- **命中的字段名**（`grad_norm<-grad norm` 这种）。确认每个指标是从你以为的那个字段抓来的。日志里同时有 `lm loss` 和 `val loss` 时，笼统的 `loss` 别名可能抓错，需要用 `--metric-key "loss=lm loss"` 钉死（字段名含空格时记得加引号）
 - **有效 step 数与区间**。和你预期的训练步数对不上，多半是字段名抓错或日志被截断
 - **告警区**。缺失的指标、重复的 step、没有 step 的指标行、不一致的单位，都在这里
 
@@ -81,8 +81,11 @@ python scripts/parse_training_log.py <主日志> --profile <profile.yaml>
 
 ```bash
 python scripts/parse_training_log.py <主日志> \
-    --metric-key loss=lm_loss --metric-key grad_norm=gnorm --metric-key step=iteration
+    --metric-key "loss=lm loss" --metric-key grad_norm=gnorm --metric-key step=iteration
 ```
+
+一个指标可以给多个候选别名（逗号分隔，按顺序试）：`--metric-key loss=lm_loss,train_loss`。
+注意 `--metric-key` 对该指标是**整组替换**而不是追加——这是刻意的，为的是能彻底摆脱默认别名的干扰。
 
 `--show-aliases` 可以打印最终生效的完整别名表，用来确认优先级合成的结果。
 
@@ -206,7 +209,7 @@ python scripts/parse_training_log.py <主日志> --compare <对比日志> --json
 
 依赖：解析脚本只用标准库（`--profile` 需要 PyYAML）；绘图脚本需要 matplotlib。
 
-退出码（两个脚本一致）：`0` 成功、`3` 没解析到指标、`4` 没有共同 step、`5` 输入文件或 profile 有问题、`6` 绘图失败。在自动化流水线里应当按退出码分支，而不是去 grep 输出文本。
+退出码两个脚本共用一套：`0` 成功、`1` 未预期错误、`2` 命令行用法错误、`3` 没解析到指标、`4` 没有共同 step、`5` 输入文件或 profile 有问题；`6`（绘图或写文件失败）只有绘图脚本会返回。在自动化流水线里应当按退出码分支，而不是去 grep 输出文本。
 
 ---
 
