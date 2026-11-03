@@ -119,3 +119,12 @@ python -m profiler_adapter.normalize --input kernels.jsonl --format jsonl --vali
 **通信 kernel 的识别。** chrome trace 里通信 kernel 的 category 仍是 `kernel`，要靠名称前缀二次识别。适配器用一组可配置的名称模式来判断，默认模式覆盖常见的通信库命名，你的通信库命名不同的话需要在 profile 里补充。
 
 **同一个算子的多条记录。** 有些 profiler 会把一个逻辑算子拆成多条 kernel 记录（比如通信算子同时有一条汇总记录和若干条实际执行记录）。直接求和会重复计算。适配器提供了去重钩子，但去重规则依赖具体 profiler 的语义，需要你确认后配置。
+
+---
+
+## 知识来源
+
+- **Chrome Trace Event Format** 公开规范：`ts` / `dur` / `ph` / `pid` / `tid` / `args` 各字段语义，完整事件（`ph: "X"`）的时间区间表示法
+- **PyTorch 官方文档**：`torch.profiler` 的 `ProfilerActivity` 分类（`cpu_op` 是主机侧算子派发记录、`kernel` 是设备侧执行记录，二者时间区间重叠，同时计入会重复统计设备耗时）、`prof.step()` 与 `ProfilerStep#N` 标注的产生方式、`export_chrome_trace` 的输出结构
+- **并发度量的定义**：重叠率以 `min(busy_a, busy_b)` 为分母，取自"短的那条有多少被长的那条盖住"这一常规口径；用总时长作分母会让一长一短的两条流永远显示为低重叠，掩盖实际已经打满的情况
+- **通信库的公开命名约定**：NCCL 与 Gloo 的 kernel 名称前缀，用作默认识别模式

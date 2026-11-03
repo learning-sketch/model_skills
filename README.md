@@ -85,4 +85,6 @@ python -m profiler_adapter.normalize --input kernels.jsonl --format jsonl --vali
 
 本仓库内容为独立编写，知识来源是公开技术文献与通用生态实践（PyTorch 官方文档、vLLM / FlashInfer 等开源实现、Megatron-LM 与 ZeRO 等论文、NVIDIA 公开文档）。每份 skill 和分析文档末尾都标注了自己的知识来源，便于核查。
 
-本项目最初的设想是迁移 [hicann/cannbot-skills](https://github.com/hicann/cannbot-skills) 的 `model/` 目录，执行中发现其许可证明文禁止把内容用于非华为处理器，因此改为按相同能力领域独立编写。依据、边界与影响记录在 [`docs/LICENSE-CONSTRAINT.md`](docs/LICENSE-CONSTRAINT.md)。
+项目的立意是借鉴 [hicann/cannbot-skills](https://github.com/hicann/cannbot-skills) 覆盖的能力领域，自己建一套。这同时也是许可证要求的做法——该项目的许可明文禁止把它的内容用于非华为处理器，复用或改写都不行。能力领域的清单可以借鉴，正文必须独立写。
+
+产出方式、受限与不受限的边界、以及已知的残余风险点记录在 [`docs/LICENSE-CONSTRAINT.md`](docs/LICENSE-CONSTRAINT.md)。要点：**不要依赖「改完之后内容已经不一样了」这个判据**——许可证禁止的是衍生作品，改动量不改变衍生性质；真正起作用的是产出方式，而非结果差异。
