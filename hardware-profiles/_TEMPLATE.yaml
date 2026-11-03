@@ -213,9 +213,9 @@ collective:
     # 另需确认异步通信是否正确向缓存分配器登记事件——没登记会导致
     # 通信还在飞、张量显存已被回收复用，表现为偶发数值错误
     async_op_supported: null      # true / false
-    # 规约顺序是否固定。运行时自适应算法会让两次运行结果有细微差异，
-    # 直接导致训练不可复现
-    reduce_order_deterministic: null   # true / false
+    # 规约顺序是否固定，登记在 precision_tools.determinism.collective_deterministic。
+    # 那是本项的唯一出处，不要在这里重复一份：运行时自适应的规约算法会让
+    # 两次运行结果有细微差异，直接导致训练不可复现，两处取值不一致就全错。
     # 非连续张量能否直接传入（否则内部要多一次拷贝）
     noncontiguous_input_supported: null
   # 集合通信的实效性能。link 的标称带宽不等于 all-reduce 的实效带宽，

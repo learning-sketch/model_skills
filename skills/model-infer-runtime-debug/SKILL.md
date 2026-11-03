@@ -29,8 +29,13 @@ description: 诊断 LLM 推理在加速卡上的运行时故障——进程报�
 | `graph.modes` | 判断当前是否跑在图模式、能否切回 eager 做分流 | 假定只有 eager，跳过 Step 2 的图模式分流 |
 | `devices.models[].memory_gb` | 判断显存需求是否从一开始就不可能满足 | 跳过容量可行性预检 |
 | `inference_framework.name` | 定位框架侧的日志位置与配置开关 | 按裸 PyTorch 脚本处理 |
-
-**profile 未覆盖但本技能需要的能力**（见文末「已知的 profile 缺口」）：同步下发开关、设备侧断言开关、残留进程查询命令、算子输入约束表。这四项目前只能让用户口头确认。
+| `diagnostics.launch_blocking_env` | Step 4 的全局同步化。让下发变同步的环境变量 | 退化为手工插同步检查点，定位慢一个数量级 |
+| `diagnostics.device_assert_enable` | 非法内存访问支线。开启后越界给出可读信息而非笼统的内存错误 | 只能靠二分加手工 `assert` 复现 |
+| `diagnostics.smi_query_processes` | Step 5 的残留进程排查 | 让用户自行用设备管理工具查看，该项在报告中标为未排除 |
+| `diagnostics.device_health_query` | 设备健康支线。查掉卡与硬件错误计数 | 无法区分软件故障与硬件故障 |
+| `diagnostics.version_query_command` | 记录驱动与运行时版本，判断是否版本不匹配 | 环境指纹缺失，无法复现他人的环境 |
+| `kernels.<算子族>.constraints` | Step 4 第 4 级。算子的输入约束：dtype 组合、取值集合、上限、对齐要求 | 定位到算子后无法判断输入是否越界，只能让用户查算子文档 |
+| `collective.default_timeout_seconds` | 多卡支线第 5 步。集合通信的默认超时值 | 无法判断"超时阈值设得过紧"这一根因 |
 
 ## 适用场景
 
@@ -243,19 +248,6 @@ def checkpoint(tag: str):
 5. **证据**：支撑根因的具体数据（算子输入 shape/dtype/数值范围、显存水位、各 rank 进度标记、设备状态）
 6. **修复**：采用了哪种修复模式、改了什么、代价多大。若为临时缓解须明确标注
 7. **残留风险**：未排除的可能性、因 profile 字段缺失而跳过的检查项、`_status` 为 `assumed` 的字段清单
-
-## 已知的 profile 缺口
-
-`_TEMPLATE.yaml` 当前没有以下字段，而本技能的对应步骤需要它们。遇到时**向用户确认，不要臆造**，并把确认结果建议补进 profile。
-
-| 建议字段路径 | 本技能哪一步要用 | 没有时的替代做法 |
-|---|---|---|
-| `diagnostics.launch_blocking_env` | Step 4 的全局同步化。以 CUDA 为例是 `CUDA_LAUNCH_BLOCKING=1` 这类让下发变同步的环境变量 | 退化为手工插同步检查点，定位慢一个数量级 |
-| `diagnostics.device_assert_enable` | 非法内存访问支线。设备侧断言的开关，开启后越界能给出可读信息而非笼统的内存错误 | 只能靠二分 + 手工 `assert` 复现 |
-| `diagnostics.smi_query_processes` | Step 5 的残留进程排查。查询占用设备的进程及其显存 | 让用户自己用设备管理工具看，该项在报告中标为未排除 |
-| `diagnostics.device_health_query` | 设备健康支线。查掉卡、硬件错误计数 | 无法区分软件故障与硬件故障 |
-| `kernels.*.constraints` | Step 4 第 4 级。各算子的输入约束：dtype 组合、head_dim 取值集合、序列长度上限、对齐要求 | 定位到算子后无法判断输入是否越界，只能让用户查算子文档 |
-| `collective.default_timeout_seconds` | 多卡支线第 5 步。集合通信的默认超时值 | 无法判断"超时阈值设得过紧"这一根因 |
 
 ## 知识来源
 

@@ -36,14 +36,20 @@ description: 为 LLM 推理做多卡并行策略选型分析，输出 2-3 个候
 | `pytorch.api.max_memory_allocated` | 校准阶段核对显存峰值预估 | 用 `diagnostics.smi_command` 采样 |
 | 各节的 `_status` | `assumed` / `unknown` 字段先验证再用 | 在报告的 `assumptions` 中逐条登记，并标注该结论的置信度 |
 
-### profile 未覆盖、必须向用户确认的信息
+### 这几项为 `null` 时必须问用户，不要猜
 
-- **集群规模**：可用节点数（`interconnect.intra_node.cards_per_node` 只说明单节点卡数）
-- **集合通信的实效带宽与延迟**：`interconnect.*.bandwidth_gb_s` 是链路标称值，不等于 all-reduce 的实效带宽。需要一张"消息尺寸 → 实测耗时"的表，或至少给出带宽效率系数与小消息延迟下限
-- **每节点网卡数与每卡可用的跨节点带宽**
-- **`bandwidth_gb_s` 的口径**：单向还是双向、每链路还是每卡聚合
-- **驱动/运行时的常驻显存**（`memory_gb` 标注为"可用"，但是否已扣除常驻未说明）
-- **各模块可用的并行实现**：推理框架实际支持哪些并行维度
+下面这些字段 profile 里有，但默认是空的。它们是时间模型与显存总账的直接输入，**缺一项整个选型结论的置信度就下一个台阶**。
+
+| profile 字段 | 为 `null` 时的后果 |
+|---|---|
+| `collective.perf.latency_us` / `bandwidth_efficiency` | **置信度最低的一环**。`interconnect.*.bandwidth_gb_s` 是链路标称值，不是 all-reduce 的实效带宽。未标定时按效率 0.8 估算并在报告中标注为假设 |
+| `interconnect.bandwidth_direction` / `bandwidth_scope` | 带宽口径不明。单向与双向差两倍，每链路与每卡聚合可能差好几倍，通信代价直接算错 |
+| `interconnect.cluster_nodes` | `world_size` 的上界未知，跨节点方案无法收口 |
+| `interconnect.inter_node.nics_per_node` | 每卡实际可用的跨节点带宽算不出来 |
+| `devices.models[].runtime_reserved_gb` | 显存总账少一项减法，按 `memory_gb` 规划会在接近满载时 OOM |
+| `inference_framework.supported_parallelism` | 框架不支持的切分方案是空谈，候选集没被过滤 |
+| `collective.capabilities.uneven_all_to_all` | **MoE 场景的硬前提**。只有等长 all-to-all 时专家并行不成立，所有含 EP 的候选都要划掉 |
+| `kernels.attention.mla_kv_shardable` | MLA 模型的 KV 能否随 TP 切分未知，显存估算可能差一个 TP 倍数 |
 
 ## 适用场景
 

@@ -38,15 +38,18 @@ description: 把一个大语言模型迁到目标加速卡上跑通，并采集�
 | `vendor.name` / `vendor.chip_family` | 基线文件中的硬件标识 | 填 `"unknown"` |
 | 各节的 `_status` | `assumed` / `unknown` 的字段先验证再用 | 用到了就必须在输出的 `assumptions` 里逐条登记 |
 
-### profile 未覆盖、必须向用户确认的信息
+### 这几项为 `null` 时必须问用户，不要猜
 
-以下是本 skill 需要、但当前 profile schema 没有定义的字段。**不要猜，逐条问用户，并把答案写进基线的 `environment` 段。**
+下面这些字段 profile 里有，但默认是空的。**逐条问用户，并把答案写进基线的 `environment` 段**——基线的全部价值在于可复现，环境指纹缺一项就复现不了。
 
-- 驱动 / 运行时 / 设备扩展包的版本号与查询命令（`diagnostics.smi_command` 只查设备状态）
-- 设备实际支持的 torch dtype 清单（`devices.models[].compute` 只给算力，不等价于 dtype 可用）
-- 未实现算子的回落策略：是报错、还是静默回落到主机计算，以及如何检测
-- 显存分配器的环境变量开关（对应 PyTorch 的 allocator 配置）
-- 分布式启动器命令（本 skill 不用，但基线要记录单卡是如何被选出来的）
+| profile 字段 | 为 `null` 时的后果 |
+|---|---|
+| `diagnostics.version_query_command` | 驱动、运行时、扩展包版本全缺。`diagnostics.smi_command` 只查设备状态，不给软件栈版本 |
+| `devices.models[].supported_dtypes` | `compute.*_tflops` 非 `null` 只说明硬件有算力，不等于该 dtype 在框架侧打通了。按算力选 dtype 会在首次 forward 撞墙 |
+| `pytorch.op_coverage.fallback_policy` / `check_command` | **接入后最常撞的一项**。`silent_host_fallback` 最危险：不报错但性能断崖，只能靠 profiler 的主机侧事件事后发现 |
+| `pytorch.allocator_env_var` | 显存分配器无法调优，碎片类问题没有抓手 |
+| `collective.launcher` | 基线记不清单卡是怎么被选出来的，多卡阶段无法对齐 |
+| `inference_framework.version` | 框架接入契约随版本变动很大，不记版本的基线过几周就不可复现 |
 
 ## 适用场景
 

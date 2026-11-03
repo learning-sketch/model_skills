@@ -36,7 +36,17 @@ description: 把 LLM 推理从逐算子下发（eager）改造成图模式执行
 | `collective.torch_backend` | 多卡场景下通信入图的后端确认 | 多卡分支需用户确认 |
 | `inference_framework.name` | 分桶配置与开关挂在框架的哪一层 | 按裸 PyTorch 脚本处理 |
 
-**profile 未覆盖但本技能需要的能力**（见文末「已知的 profile 缺口」）：图捕获的内存池要求、可捕获图的数量/规模上限、捕获期多流支持、动态 shape 编译支持程度、可用的调试后端名清单、编译缓存位置、重编译次数上限配置项、捕获前的预热次数要求。这些目前只能让用户确认。
+| `graph.graph_capture.capture_context_api` / `replay_api` | Step 2 的代码骨架。`graph_capture.api` 只给类名，进入捕获与重放要靠这两个 | 骨架留空待填，给不出可直接跑的代码 |
+| `graph.graph_capture.warmup_iters_required` | 静态化清单第 6 项。预热不足会把一次性初始化录进图里 | 保守多预热若干次，无法判断是否足够 |
+| `graph.graph_capture.memory_pool_api` | 静态化清单第 6 项。捕获是否需要专属显存池、怎么跨图共享 | 每张图独占缓冲，分桶时显存增量成倍放大 |
+| `graph.graph_capture.max_graphs` / `max_nodes_per_graph` | Step 2 的分桶数量上限 | 只能试到失败为止才知道上限 |
+| `graph.graph_capture.constraints.rng_capture_supported` | 静态化清单第 7 项。随机数状态能否进图 | 一律把采样移出图，放弃这部分收益 |
+| `graph.graph_capture.constraints.multi_stream_supported` | 与多流优化叠加时 | 不叠加，两项优化各自单独验证 |
+| `graph.dynamic_shape_supported` | Step 4 的 `mark_dynamic` 方案 | 只能走分桶，桶数多时显存与启动成本偏高 |
+| `graph.debug_backends` | Step 5 的前后端定界阶梯 | 定界失效，只能整体二分 |
+| `graph.compile_cache_dir` | 排查陈旧编译缓存导致的"改了代码不生效" | 该类问题无法快速排除 |
+| `graph.recompile_limit_config` | Step 4 的重编译上限。超限后静默回落 eager | "跑着跑着突然变慢"只能靠日志倒推 |
+| `graph.kernel_fusion_codegen.exclusive_with_graph_capture` | 判断能否与子图融合叠加 | 按互斥处理，放弃叠加 |
 
 ## 适用场景
 
@@ -258,23 +268,6 @@ def run(real_input):
 7. **三段验证的完整数据**：三段各自的判据与实测值，一段不过就不得给出"完成"结论
 8. **开关与回退**：开关名、默认值、回退触发条件
 9. **残留风险**：因 profile 字段缺失而采用的保守假设清单、`_status` 为 `assumed` 的字段、未覆盖的输入形态
-
-## 已知的 profile 缺口
-
-`_TEMPLATE.yaml` 当前没有以下字段，而本技能的对应步骤需要它们。遇到时**向用户确认，不要臆造**，并把确认结果建议补进 profile。
-
-| 建议字段路径 | 本技能哪一步要用 | 没有时的替代做法 |
-|---|---|---|
-| `graph.graph_capture.capture_context_api` / `replay_api` | Step 2 的代码骨架。`graph_capture.api` 只登记了类名，没登记"怎么进入捕获"与"怎么重放" | 骨架留空待填，无法给出可直接跑的代码 |
-| `graph.graph_capture.warmup_iters_required` | 静态化清单第 6 项。捕获前需要几次预热执行 | 保守多预热若干次，无法判断是否足够 |
-| `graph.graph_capture.memory_pool_api` | 静态化清单第 6 项。捕获是否需要专属显存池、怎么跨图共享池 | 每张图独占缓冲，分桶时显存增量成倍放大 |
-| `graph.graph_capture.max_graphs` / `max_nodes_per_graph` | Step 2 的分桶数量上限 | 只能试到失败为止才知道上限 |
-| `graph.graph_capture.constraints.rng_capture_supported` | 静态化清单第 7 项。随机数状态能否进图 | 一律把采样移出图，放弃这部分收益 |
-| `graph.graph_capture.constraints.multi_stream_supported` | 与 `model-infer-multi-stream` 叠加时 | 不建议叠加，两项优化只能二选一地先各自验证 |
-| `graph.dynamic_shape_supported` | Step 4 的 `mark_dynamic` 方案 | 只能走分桶，桶数多时显存与启动成本偏高 |
-| `graph.debug_backends` | Step 5 的前后端定界阶梯 | 若你的栈不提供上游的 `eager` / `aot_eager`，定界失效，只能整体二分 |
-| `graph.compile_cache_dir` | 排查陈旧编译缓存导致的"改了代码不生效" | 该类问题无法快速排除 |
-| `graph.recompile_limit_config` | Step 4 的重编译上限 | "跑着跑着突然变慢"这一症状只能靠日志倒推 |
 
 ## 知识来源
 

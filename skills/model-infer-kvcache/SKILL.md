@@ -27,17 +27,20 @@ description: 为目标加速卡上的 LLM 推理设计并接入 KV cache，重�
 | `diagnostics.error_signatures.illegal_memory_access` | 索引越界的典型症状 | 按"非法内存访问"模糊匹配 |
 | `diagnostics.sanitizer.command` | 排查越界写 | 跳过，改用主机侧的索引断言兜底 |
 
-### profile 未覆盖、必须向用户确认的信息
+### 这几项为 `null` 时必须问用户，不要猜
 
-以下信息本 skill 必须有，但当前 profile schema 没有对应字段。**逐条问用户或查算子文档，不要猜。**
+下面这些字段 profile 里有，但默认是空的。它们直接决定接入方案，**猜错的代价是偶发且难定位的正确性问题**，不是性能损失。
 
-- 分页算子支持的 `block_size` 取值集合或整除约束
-- 分页算子支持的 KV cache dtype（是否支持低于 16 bit 的 KV）
-- 分页算子对 `head_dim` 的取值限制
-- `block_table` / `slot_mapping` / 序列长度数组要求的整数位宽与设备位置
-- K 与 V 是否使用同一种布局（部分实现里两者不同）
-- 是否支持"带已有 KV 的 prefill"（分块 prefill / 前缀复用）
-- 空闲显存查询接口（PyTorch 侧用于推算块数的 free/total 查询）
+| profile 字段 | 为 `null` 时的后果 |
+|---|---|
+| `kernels.attention.supported_block_sizes` | `block_size` 选型的碎片与效率权衡算得出来却收不了口 |
+| `kernels.attention.kv_cache_dtype_supported` | 不知道 KV 能否存成低于 16 bit，显存规划的下限估不准 |
+| `kernels.attention.max_head_dim` / `supported_head_dims` | 模型的 `head_dim` 可能根本不被算子支持，要到运行时才暴露 |
+| `kernels.attention.metadata_dtype` / `metadata_device` / `block_table_padding_value` | 索引数组的位宽、位置、填充值约定不符会读到错误的块 |
+| `kernels.attention.k_v_layout_same` | K 与 V 布局不同时，按单一布局构造会静默读错 V |
+| `kernels.attention.block_granular_read` | **最危险的一项**。为真时回收的块必须清尾部，否则多轮对话串数据，表现为偶发的、与并发历史相关的输出异常 |
+| `kernels.attention.chunked_prefill_supported` / `prefix_cache_supported` | 不知道能否做"带已有 KV 的 prefill"，前缀复用方案无从设计 |
+| `pytorch.api.mem_get_info` | 只能用 `memory_allocated` 推算可用显存，而它不含运行时常驻与其他进程占用，会系统性高估、在接近满载时 OOM |
 
 ## 适用场景
 

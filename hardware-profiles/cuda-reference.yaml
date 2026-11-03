@@ -139,9 +139,7 @@ collective:
     uneven_all_to_all: true
     bf16_reduce_native: true
     async_op_supported: true          # async_op=True 返回 Work 句柄
-    # NCCL 会按拓扑与消息大小自适应选择算法，规约顺序不保证跨运行一致。
-    # 需要可复现时要固定 NCCL_ALGO / NCCL_PROTO 并钉死 rank 数与消息大小
-    reduce_order_deterministic: false
+    # 规约顺序的确定性登记在 precision_tools.determinism.collective_deterministic
     noncontiguous_input_supported: false   # 需调用方先 .contiguous()
   perf:
     # 实效值强依赖消息大小、拓扑与算法，必须按你的集群实测。

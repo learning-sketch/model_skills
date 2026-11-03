@@ -165,7 +165,7 @@
 
 **一、算子内部竞态。** SIMT 架构下，同一 block 内线程通过共享内存交换数据时缺少屏障，或跨 block 通过全局内存通信时缺少 memory fence，会产生竞态。症状是"大多数时候对、偶尔差一点，且与输入规模或并发度相关"。对策是 racecheck 类的 sanitizer——[profile](../../hardware-profiles/_TEMPLATE.yaml) 的 `diagnostics.sanitizer` 一节就是为登记这个能力准备的。**如果你的栈还没有 racecheck 等价物，这类问题只能靠反复跑加缩小范围定位，成本极高**，这一项值得单独投入，它的杠杆率不低于 dump 工具本身。
 
-**二、集合通信规约顺序。** 要问清三件事：(a) 固定 rank 数、固定消息大小、固定拓扑下，all-reduce 的加法顺序是否固定；(b) 是否存在基于运行时状况的算法自适应选择；(c) 是否存在"消息被切成多个 chunk、按完成顺序归约"的实现。**第三种最隐蔽**——它在代码上看不出随机性，但 chunk 的完成顺序受链路抖动影响。结论登记在 profile 的 `collective.collective_deterministic`。
+**二、集合通信规约顺序。** 要问清三件事：(a) 固定 rank 数、固定消息大小、固定拓扑下，all-reduce 的加法顺序是否固定；(b) 是否存在基于运行时状况的算法自适应选择；(c) 是否存在"消息被切成多个 chunk、按完成顺序归约"的实现。**第三种最隐蔽**——它在代码上看不出随机性，但 chunk 的完成顺序受链路抖动影响。结论登记在 profile 的 `precision_tools.determinism.collective_deterministic`。
 
 **三、编译器浮点重排。** 要问清：默认编译选项是否允许浮点重排；FMA 的生成是否由编译器自行决定；是否有 JIT 且 JIT 决策依赖运行时信息。**autotune 缓存尤其危险**——第一次运行做调优并写缓存，第二次读缓存直接走最优配置，两次运行走的是不同 kernel，数值自然不同，而表面上看你什么都没改。调试确定性问题时必须有办法强制关闭 autotune 或钉死配置。
 

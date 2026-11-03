@@ -32,7 +32,14 @@ description: 用多流并行压缩 LLM 推理的单步时延。覆盖整网与 D
 | `kernels.memory.host_offload_api` | KV cache 异步卸载的拷贝接口 | 卸载场景跳过 |
 | `graph.graph_capture.constraints.collective_ops_supported` | 图模式与多流叠加时，通信能否同时满足两边约束 | 不建议叠加，先单独验证多流 |
 
-**profile 未覆盖但本技能需要的能力**（见文末「已知的 profile 缺口」）：硬件执行队列数量、流优先级支持、拷贝引擎数量与计算/拷贝并发能力、`current_stream` / `default_stream` / `wait_stream` 的等价 API、pinned 主机内存分配接口、捕获期多流支持、profiler 能否导出硬件队列（而非软件流 ID）。这些缺一项就会削弱对应的判定能力，须在报告中声明。
+| `pytorch.api.current_stream` / `default_stream` / `wait_stream` | Step 5 的全部编排代码 | 只能用事件做所有等待，代码更啰嗦；取当前流无替代，必须问用户 |
+| `devices.models[].concurrency.hardware_queue_count` | Step 7 第 3 类假并行的根因 (c)。多条软件流映射到几条硬件队列 | 无法解释"流切对了但不重叠"，只能逐个排除其他原因 |
+| `devices.models[].concurrency.copy_engine_count` / `compute_copy_concurrent` | 场景 C 的可行性前提。拷贝能否与计算真正并发 | 卸载方案只能实测，做完才知道有没有用 |
+| `pytorch.api.pin_memory` | 场景 C。不用页锁定内存则拷贝退化为同步 | 卸载场景大概率无收益，需标注未验证 |
+| `devices.models[].concurrency.stream_priority_supported` | Step 4 的编排细化 | 不使用优先级，编排自由度降低 |
+| `profiler.kernel_table_columns.hardware_queue_id` | Step 6 的重叠率。软件流与硬件队列不是一回事 | 按软件流计算，队列复用时偏乐观，需在报告中声明 |
+| `graph.graph_capture.constraints.multi_stream_supported` | 多流与图模式叠加 | 不叠加，先各自单独验证 |
+| `devices.models[].concurrency.stream_compute_partitioning` | 判断"按流划分算力"是否存在 | **按不存在处理**。为 `null` 或 `false` 时不得提出任何需要给流分配固定算力份额的方案 |
 
 > **架构前提，务必先读**：「按流限制计算核数量」「给某条流划一块算力」这类手段，在 SIMT 架构上**没有一等公民 API**。它预设了计算单元可以被细粒度地划分给不同的流。如果 `profile` 里没有登记对应能力，**不要建议用户这么做，也不要在方案里假设它存在**。SIMT 上可用的只有流的并发下发与（若支持）流优先级。
 
@@ -289,21 +296,6 @@ y_side.record_stream(main_stream)
 6. **正确性验证**：与单流基线的输出比对结果；跨流张量的生命周期处理清单（逐个张量列出用了 `record_stream` 还是显式保活）
 7. **开关清单**：开关名、默认值、对应并行点、建议关闭的条件
 8. **残留风险**：因 profile 字段缺失而无法确认的项（硬件队列数、拷贝引擎并发、流优先级等）、`_status` 为 `assumed` 的字段、以及明确声明"未使用任何需要按流划分算力的手段"
-
-## 已知的 profile 缺口
-
-`_TEMPLATE.yaml` 当前没有以下字段，而本技能的对应步骤需要它们。遇到时**向用户确认，不要臆造**，并把确认结果建议补进 profile。
-
-| 建议字段路径 | 本技能哪一步要用 | 没有时的替代做法 |
-|---|---|---|
-| `pytorch.api.current_stream` / `default_stream` / `wait_stream` | Step 5 的全部编排代码。`pytorch.api` 只登记了 `stream_class` / `event_class` / `stream_context` / `record_stream`，缺了"取当前流"和"流等流" | 只能用事件做所有等待，代码更啰嗦；取当前流无替代，必须问用户 |
-| `devices.models[].hardware_queue_count` | Step 7 第 3 类假并行的根因 (c)。多条软件流最终映射到几条硬件队列 | 无法解释"流切对了但不重叠"，只能逐个排除其他原因 |
-| `devices.models[].copy_engine_count` / `compute_copy_concurrent` | 场景 C 的可行性前提。拷贝能否与计算真正并发 | 卸载方案只能实测，做完才知道有没有用 |
-| `pytorch.api.pin_memory` | 场景 C。页锁定主机内存的分配接口，不用它则拷贝退化为同步 | 卸载场景大概率无收益，需标注未验证 |
-| `pytorch.api.stream_priority_supported` | Step 4 的编排细化。能否让关键路径的流优先获得下发机会 | 不使用优先级，编排自由度降低 |
-| `profiler.kernel_table_columns.hardware_queue_id` | Step 6 的重叠率。软件流 ID 与硬件队列不是一回事，只看软件流可能高估并发 | 重叠率按软件流计算，在队列复用时会偏乐观，需在报告中声明 |
-| `graph.graph_capture.constraints.multi_stream_supported` | 多流与图模式叠加 | 不叠加，先各自单独验证 |
-| `devices.models[].stream_compute_partitioning` | 判断"按流划分算力"是否存在 | **按不存在处理**。该字段缺失时不得提出任何需要给流分配固定算力份额的方案 |
 
 ## 知识来源
 
