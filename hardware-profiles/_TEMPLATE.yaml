@@ -1,0 +1,662 @@
+# ==============================================================================
+# 硬件 Profile 模板
+# ==============================================================================
+# 这份文件是迁移后 skills 的唯一硬件事实来源（single source of truth）。
+#
+# 迁移后的每个 skill 正文只写厂商中性的方法论，所有与具体芯片相关的 API 名、
+# 工具命令、规格数字、错误码，都通过 {{profile.<路径>}} 占位符引用本文件。
+# 填完这一份 YAML，整套 skills 就能在你的芯片上工作。
+#
+# 用法：
+#   1. 复制本文件为 hardware-profiles/<你的芯片名>.yaml
+#   2. 逐项填写；参考 cuda-reference.yaml（CUDA 生态的填法示例）
+#   3. 填不了的项保持 null，并在 unknown_or_unsupported 里登记原因
+#   4. 在 README.md 中把 active_profile 指向你的文件
+#
+# 字段状态约定（每个大节都有 _status 字段）：
+#   verified     —— 已在真机上验证过
+#   assumed      —— 按类 CUDA 语义推定，尚未验证
+#   not_supported—— 本芯片确实没有这个能力
+#   unknown      —— 还没查
+#
+# 填写纪律：宁可留 null + unknown，不要臆造 API 名和规格数字。
+# 迁移后的 skills 会检查字段状态：遇到 assumed/unknown 会提示先验证再执行。
+# ==============================================================================
+
+schema_version: 1
+
+# ------------------------------------------------------------------------------
+# 1. 身份
+# ------------------------------------------------------------------------------
+vendor:
+  # 厂商名，用于文档中的称呼
+  name: null                      # 例: "Acme"
+  # 芯片产品族
+  chip_family: null               # 例: "AcmeAccel X"
+  # 一句话描述架构类型，影响多个 skill 的建议方向
+  # 推荐取值: "SIMT"（类 CUDA，统一标量核）/ "SIMT+TensorCore" /
+  #           "heterogeneous"（计算单元分离，如 cube+vector 分离式）
+  architecture_class: null        # 例: "SIMT+TensorCore"
+
+# ------------------------------------------------------------------------------
+# 2. PyTorch 集成层
+#    —— 几乎所有 skill 都要用。决定代码示例怎么写。
+# ------------------------------------------------------------------------------
+pytorch:
+  _status: unknown
+
+  # torch 里的设备类型字符串，用于 tensor.to(...)、device= 参数
+  device_type: null               # 例: "cuda" / "acme"
+
+  # 是否需要 import 一个设备扩展包才能启用设备。CUDA 为 null（原生内置）
+  extension_module: null          # 例: null / "torch_acme"
+
+  # 设备 API 命名空间。所有 torch.cuda.* 等价调用从这里取
+  device_namespace: null          # 例: "torch.cuda" / "torch.acme"
+
+  # 是否通过 PrivateUse1 后端接入（影响很多 PyTorch 原生特性的可用性）
+  uses_privateuse1_backend: null  # true / false
+
+  # 下面这些是 skills 里高频引用的具体调用。写完整可调用名。
+  api:
+    synchronize: null             # 例: "torch.cuda.synchronize"
+    set_device: null              # 例: "torch.cuda.set_device"
+    current_device: null
+    device_count: null
+    empty_cache: null             # 例: "torch.cuda.empty_cache"
+    max_memory_allocated: null    # 例: "torch.cuda.max_memory_allocated"
+    memory_allocated: null
+    reset_peak_memory_stats: null
+    # 限制进程可用显存比例。OOM skill 的"内存水线"步骤依赖它
+    set_per_process_memory_fraction: null
+    # 显存快照。OOM skill 的 Step3 依赖它
+    record_memory_history: null   # 例: "torch.cuda.memory._record_memory_history"
+    dump_memory_snapshot: null    # 例: "torch.cuda.memory._dump_snapshot"
+    # 设备空闲/总显存查询。KV cache 推算可分配块数的直接输入。
+    # 注意不能用 memory_allocated 代替：后者只报分配器内部的量，
+    # 不含运行时常驻与其他进程占用，用它算可用显存会系统性高估
+    mem_get_info: null            # 例: "torch.cuda.mem_get_info"
+    memory_reserved: null         # 例: "torch.cuda.memory_reserved"，判断碎片用
+    # 流与事件。multi-stream skill 依赖它
+    stream_class: null            # 例: "torch.cuda.Stream"
+    event_class: null             # 例: "torch.cuda.Event"
+    stream_context: null          # 例: "torch.cuda.stream"
+    record_stream: null           # 例: "Tensor.record_stream"
+    # 取当前流 / 默认流 / 流等流。多流编排代码绕不过这三个，无替代手段
+    current_stream: null          # 例: "torch.cuda.current_stream"
+    default_stream: null          # 例: "torch.cuda.default_stream"
+    wait_stream: null             # 例: "Stream.wait_stream"
+    # 页锁定主机内存。不用它则主机与设备间的拷贝退化为同步
+    pin_memory: null              # 例: "Tensor.pin_memory"
+    # 随机数种子设置。基线可复现性依赖它
+    manual_seed: null             # 例: "torch.cuda.manual_seed_all"
+    # 确定性开关。train-precision skills 依赖它
+    deterministic_api: null       # 例: "torch.use_deterministic_algorithms"
+
+  # 显存分配器的可调项。oom-analysis 第 4 步的「零代价」档全靠这里：
+  # 调分配器不改模型、不改并行配置，是碎片型 OOM 性价比最高的手段。
+  # 但各家的开关名不同，这里不填，skill 就只能让用户自己去翻文档。
+  allocator_config:
+    # 配置入口。决定进程起来之后还能不能改——若只有环境变量，
+    # 就必须在第一次分配之前设好，写在训练脚本里已经太晚
+    entrypoint: null              # "env_var" / "api" / "both"
+    env_var: null                 # 例: "PYTORCH_CUDA_ALLOC_CONF"
+    # 可扩展段的开关名。段按需扩展而不是按固定档位切，是碎片型 OOM 最直接的解法
+    expandable_segments_key: null # 例: "expandable_segments"
+    # 分段上限的参数名。超过该大小的空闲块不再被切开复用，减少大块被切碎
+    max_split_size_key: null      # 例: "max_split_size_mb"
+    # 可扩展段与图捕获是否能同时开。部分实现下两者互斥，
+    # 推理侧开了图捕获就用不了这个解法——必须实测，不要按"应该可以"填
+    expandable_segments_graph_safe: null
+
+  # 算子覆盖度。模型接入后首次 forward 最常撞这里
+  op_coverage:
+    # 遇到未实现的算子时的行为。"silent_host_fallback" 最危险：
+    # 不报错，但性能断崖，且只能靠 profiler 的主机侧事件事后发现
+    fallback_policy: null         # "error" / "silent_host_fallback" / "warn_and_fallback"
+    # 检测哪些算子回落到了主机的手段
+    check_command: null
+
+  # 显存快照 pickle 是否与 PyTorch 上游 CUDA 格式同构。
+  # 影响面是本 profile 里最大的一项之一：为 false 时
+  # analyze_memory_snapshot.py 的七个分析维度全部不可信，
+  # oom-analysis 的第 2、3 步整个走不通，只剩静态估算和水位探测。
+  # 核对方法：采一份真实快照，确认顶层有 segments 与 device_traces 两个键，
+  # 且每个 segment 带 blocks 列表、每个 block 带 size / state / frames
+  memory_snapshot_format_compatible: null   # true / false / "partial"
+
+# ------------------------------------------------------------------------------
+# 3. 设备规格
+#    —— parallel-analysis 的显存/带宽估算、oom-analysis 的预算判断依赖这里。
+#    多型号就写多条。
+# ------------------------------------------------------------------------------
+devices:
+  _status: unknown
+  models:
+    - model: null                 # 例: "X100"
+      memory_gb: null             # 单卡标称显存（GB）
+      # 驱动与运行时的常驻占用（GB）。显存总账要先减掉它，
+      # 否则按 memory_gb 规划 KV cache 池会在接近满载时 OOM。
+      # 实测方法：空进程里建一个 device 上下文（随便分配一个小张量），
+      # 然后用 pytorch.api.mem_get_info 读 (free, total)，差值即为常驻占用。
+      # 不要用 memory_allocated 推算——它只报分配器内部的量
+      runtime_reserved_gb: null
+      memory_bandwidth_gb_s: null # HBM/DRAM 带宽
+      # PyTorch 侧实际可用的 dtype 清单。
+      # 注意 compute.*_tflops 非 null 只说明硬件有这个算力，
+      # 不等于该 dtype 在框架侧已经打通
+      supported_dtypes: []        # 例: ["fp32", "tf32", "fp16", "bf16", "fp8_e4m3", "int8"]
+      # 算力。按实际支持的 dtype 填，不支持的留 null
+      compute:
+        fp32_tflops: null
+        tf32_tflops: null
+        fp16_tflops: null
+        bf16_tflops: null
+        fp8_tflops: null
+        int8_tops: null
+        int4_tops: null
+      # 计算单元。架构不同填法不同：
+      #   SIMT 类填 sm_count / tensor_core_count
+      #   分离式架构填各类核的数量
+      compute_units:
+        type: null                # 例: "SM" / "cube+vector"
+        count: null               # 例: 132
+        # 分离式架构在这里补充各类核数量，SIMT 留空
+        detail: {}
+      cache:
+        l2_mb: null
+        shared_mem_per_unit_kb: null
+      # 并发执行资源。multi-stream skill 的判据依赖这一组。
+      concurrency:
+        # 多条软件流最终映射到几条硬件执行队列。
+        # 这是"流切对了但时间窗不重叠"最常见的解释项
+        hardware_queue_count: null
+        # 拷贝引擎数量，以及拷贝能否与计算真正并发
+        copy_engine_count: null
+        compute_copy_concurrent: null   # true / false
+        # 能否给流设优先级，让关键路径优先获得下发机会
+        stream_priority_supported: null # true / false
+        # 能否按流给计算单元分配固定份额。
+        # SIMT 架构通常没有这种一等公民 API，此时应显式填 false：
+        # 留 null 会让 skill 无法区分"不支持"与"还没查"
+        stream_compute_partitioning: null   # true / false
+
+# ------------------------------------------------------------------------------
+# 4. 互联与集合通信
+#    —— parallel-analysis 的通信代价估算、parallel-impl、runtime-debug 依赖这里。
+# ------------------------------------------------------------------------------
+interconnect:
+  _status: unknown
+  # 集群总节点数。cards_per_node 只说明单节点，world_size 的上界要靠这个
+  cluster_nodes: null
+  # 下面所有 bandwidth_gb_s 的统一口径。不写明口径的带宽数字无法用于计算：
+  # 单向与双向差两倍，每链路与每卡聚合可能差好几倍
+  bandwidth_direction: null       # "unidirectional" / "bidirectional"
+  bandwidth_scope: null           # "per_link" / "per_card_aggregate"
+  # 节点内卡间互联
+  intra_node:
+    name: null                    # 例: "NVLink" / "AcmeLink"
+    bandwidth_gb_s: null
+    topology: null                # 例: "all-to-all" / "ring" / "switch"
+    cards_per_node: null
+  # 跨节点
+  inter_node:
+    name: null                    # 例: "InfiniBand NDR" / "RoCE v2"
+    bandwidth_gb_s: null
+    # 每节点网卡数，决定每张卡实际能分到多少跨节点带宽
+    nics_per_node: null
+
+collective:
+  _status: unknown
+  # 集合通信库名
+  library: null                   # 例: "NCCL" / "AcmeCCL"
+  # torch.distributed.init_process_group(backend=...) 用的字符串
+  torch_backend: null             # 例: "nccl" / "acmeccl"
+  # 支持的原语。不支持的从列表里删掉
+  primitives:
+    - all_reduce
+    - all_gather
+    - reduce_scatter
+    - all_to_all
+    - broadcast
+    - send_recv
+  # 只列原语名不够，下面这几项决定它们能不能真的用起来。
+  capabilities:
+    # 不等长切分的 all_to_all（input_split_sizes / output_split_sizes）。
+    # MoE 专家并行的硬前提：每个 rank 发给其他 rank 的 token 数运行时才确定，
+    # 只有等长版本的话专家并行直接不成立
+    uneven_all_to_all: null       # true / false
+    # 规约类算子是否原生支持 bf16。走软件模拟的话慢到不能用于训练，
+    # 而现在的大模型训练默认就是 bf16
+    bf16_reduce_native: null      # true / false
+    # 是否支持 async_op=True 并返回工作句柄。没有它就谈不上通信与计算重叠。
+    # 另需确认异步通信是否正确向缓存分配器登记事件——没登记会导致
+    # 通信还在飞、张量显存已被回收复用，表现为偶发数值错误
+    async_op_supported: null      # true / false
+    # 规约顺序是否固定，登记在 precision_tools.determinism.collective_deterministic。
+    # 那是本项的唯一出处，不要在这里重复一份：运行时自适应的规约算法会让
+    # 两次运行结果有细微差异，直接导致训练不可复现，两处取值不一致就全错。
+    # 非连续张量能否直接传入（否则内部要多一次拷贝）
+    noncontiguous_input_supported: null
+  # 集合通信的实效性能。link 的标称带宽不等于 all-reduce 的实效带宽，
+  # 并行选型的时间模型 T ≈ steps × latency + bytes / bandwidth_effective
+  # 两个参数都要实测，未标定时 skill 会取保守默认值并标注为假设
+  perf:
+    latency_us: null              # 小消息延迟下限（微秒）
+    bandwidth_efficiency: null    # 实效带宽 / 标称带宽，0~1
+  # 集合通信的默认超时。runtime-debug 判断"超时阈值设得过紧"要用
+  default_timeout_seconds: null
+  # 分布式启动器命令
+  launcher: null                  # 例: "torchrun"
+  # 调优/排障用的环境变量。runtime-debug、parallel-impl 会引用
+  env_vars:
+    buffer_size: null             # 例: "NCCL_BUFFSIZE"
+    connect_timeout: null         # 例: "NCCL_COMM_TIMEOUT"
+    exec_timeout: null
+    interface_select: null        # 例: "NCCL_SOCKET_IFNAME"
+    debug_level: null             # 例: "NCCL_DEBUG"
+  # 是否有把集合通信与矩阵计算编进同一个算子的能力。
+  # 有这类算子就能省掉中间结果的往返，是 MoE 并行的关键优化点。
+  # 影响 MoE 并行能否用上这条优化路径，见 docs/pending/parallel-impl.md
+  fused_comm_compute_ops:
+    available: null               # true / false
+    ops: []                       # 有的话列出算子名
+
+# ------------------------------------------------------------------------------
+# 5. Profiler
+#    —— perf-breakdown、profiling、multi-stream 的验证环节、recommend-analysis
+#       全部依赖这里。这是迁移成本最集中的一节。
+# ------------------------------------------------------------------------------
+profiler:
+  _status: unknown
+
+  # 采集入口
+  api: null                       # 例: "torch.profiler.profile"
+  # 是否支持 torch.profiler 标准接口（决定采集代码能否直接复用）
+  torch_profiler_compatible: null # true / false / "partial"
+  # 命令行 profiler
+  cli_tool: null                  # 例: "nsys" / "ncu" / "acme-prof"
+
+  # 产物布局。perf-breakdown 的输入发现逻辑依赖它
+  output:
+    root_dir_pattern: null        # 例: "*.nsys-rep" / "{run}_acme_pt/"
+    kernel_table_file: null       # 例: "kernel_details.csv"
+    trace_file: null              # 例: "trace.json"
+    op_summary_file: null
+    comm_file: null
+
+  # kernel 表的列名映射。
+  # 左边是 skills 内部使用的统一字段名（不要改），右边填你的 profiler 实际列名。
+  # 这张表是 model-infer-perf-breakdown 适配层的核心输入。
+  kernel_table_columns:
+    step_id: null                 # 统一字段 step_id   ← 你的列名
+    name: null                    # kernel 名
+    duration_us: null             # 执行时长（微秒）
+    start_time_us: null           # 起始时间戳（微秒）
+    stream_id: null               # 流 ID
+    task_type: null               # kernel 类型分类列
+    device_id: null
+    wait_time_us: null            # 可选
+    block_dim: null               # 可选，并行度
+    input_shapes: null            # 可选
+    output_shapes: null           # 可选
+    # 多节点下 device_id 不足以唯一标识一张卡，rank 间方差统计需要这个
+    rank_id: null                 # 可选
+    # 硬件执行队列号。软件流 ID 与硬件队列不是一回事：
+    # 多条软件流可能复用同一条队列，此时只看软件流会高估并发
+    hardware_queue_id: null       # 可选
+    # 推理阶段标注。prefill 与 decode 的性能特征完全不同，
+    # 混在一起统计的结论没有意义。没有这一列就必须分两次采集
+    phase: null                   # 可选
+
+  # task_type 列的取值词表。skills 用它区分计算/通信/主机侧 kernel。
+  task_type_values:
+    compute: []                   # 例: ["kernel", "gemm"]
+    communication: []             # 例: ["nccl"]
+    memory: []                    # 例: ["memcpy", "memset"]
+    # 标记"该算子没有设备实现、掉回主机算"的取值。
+    # 这类事件出现本身就是性能告警信号
+    host_fallback: []
+
+  # 硬件计数器 / 流水线利用率指标。填你的 profiler 实际的指标名。
+  # 没有就留空列表，相关的 roofline 判据会退化为只看时间。
+  hardware_counters:
+    available: null               # true / false
+    compute_utilization: null     # 例: "sm__throughput.avg.pct_of_peak_sustained_elapsed"
+    memory_utilization: null      # 例: "dram__throughput.avg.pct_of_peak_sustained_elapsed"
+    tensor_core_utilization: null
+    # 判定算子是 memory-bound 还是 compute-bound 的阈值
+    # prefetch / perf-breakdown / recommend-analysis 用
+    memory_bound_threshold: null  # 例: 0.6（访存利用率超过它判为 memory-bound）
+    low_utilization_threshold: null
+    # 上面这些"利用率"的分母是什么。分母搞错会让受限判定系统性偏向一边
+    utilization_denominator: null # "peak_spec" / "theoretical_at_current_clock"
+    # 读计数器是否需要重放 kernel 或串行化执行。
+    # 需要的话，counters 与 timeline 采不到同一次运行里，必须两次采集 + 离线合并
+    requires_kernel_replay: null  # true / false
+
+# ------------------------------------------------------------------------------
+# 6. 图模式 / 编译
+#    —— graph-mode、multi-stream 的实现路径、superkernel 类优化依赖这里。
+# ------------------------------------------------------------------------------
+graph:
+  _status: unknown
+
+  # 支持的执行模式。不支持的删掉
+  modes: []                       # 例: ["eager", "torch_compile", "graph_capture"]
+
+  # torch.compile 后端名
+  torch_compile_backend: null     # 例: "inductor" / "acme"
+  torch_compile_supported: null   # true / false / "partial"
+  # 能否声明某一维为动态而不触发重编译
+  dynamic_shape_supported: null   # true / false / "partial"
+  # 定界用的调试后端，从最朴素到最完整排成阶梯。
+  # 缺了它就无法判断问题出在前端捕获还是后端代码生成，只能整体二分
+  debug_backends: []              # 例: ["eager", "aot_eager", "inductor"]
+  # 编译缓存目录。排查"改了代码不生效"要用
+  compile_cache_dir: null
+  # 重编译次数上限的配置项。超限后静默回落 eager，
+  # 表现为"跑着跑着突然变慢"，没有这个配置名就只能靠日志倒推
+  recompile_limit_config: null
+
+  # 图捕获重放（CUDA Graph 那一类）
+  graph_capture:
+    available: null               # true / false
+    api: null                     # 例: "torch.cuda.CUDAGraph"
+    # 只登记类名不够，代码骨架要靠下面两个才能写成可直接跑的形态
+    capture_context_api: null     # 例: "torch.cuda.graph"
+    replay_api: null              # 例: "CUDAGraph.replay"
+    torch_compile_mode: null      # 例: "reduce-overhead"
+    # 捕获前需要几次预热执行。预热不足会把一次性的初始化录进图里
+    warmup_iters_required: null
+    # 专属显存池接口。不共享池时每张图独占缓冲，分桶会让显存成倍放大
+    memory_pool_api: null         # 例: "torch.cuda.graph_pool_handle"
+    # 规模上限。没有这两个就只能试到失败才知道边界
+    max_graphs: null
+    max_nodes_per_graph: null
+    # 捕获期的限制。graph-mode skill 的静态化检查清单依赖它
+    constraints:
+      static_shape_required: null       # true / false
+      static_address_required: null     # 输入输出地址是否必须固定
+      host_sync_forbidden: null         # 捕获期是否禁止 .item() 等主机同步
+      dynamic_control_flow_forbidden: null
+      collective_ops_supported: null    # 集合通信能否进图
+      rng_capture_supported: null       # 随机数状态能否进图（决定采样要不要移出图）
+      multi_stream_supported: null      # 捕获期能否用多流（决定两项优化能否叠加）
+
+  # 是否有"标注一段范围、由编译器生成单个 kernel"的能力。
+  # 与图捕获的区别：图捕获消除的是主机侧下发开销，这个消除的是
+  # 设备侧调度开销与中间结果的显存往返。详见 docs/pending/subgraph-fusion.md
+  kernel_fusion_codegen:
+    available: null               # true / false
+    api: null
+    scope_annotation: null        # 标记融合范围的写法
+    # 与 graph_capture 是否互斥。互斥的话两种优化只能二选一
+    exclusive_with_graph_capture: null
+    notes: null
+
+# ------------------------------------------------------------------------------
+# 7. 算子库
+#    —— fusion、kvcache、quantization、parallel-impl 依赖这里。
+#    只填你真实提供的算子，没有就留 null。skills 会据此决定走融合路径还是
+#    朴素 PyTorch 路径。
+# ------------------------------------------------------------------------------
+kernels:
+  _status: unknown
+
+  # 每个算子族下都有一个 constraints 段，登记该算子的输入约束：
+  # dtype 组合、取值集合、上限、对齐要求。runtime-debug 二分定位到具体算子
+  # 之后，没有这张表就无法判断输入是否越界，只能让用户去翻算子文档。
+  # 格式自由，建议 "约束名: 取值或说明"。
+
+  attention:
+    # 变长/拼包 attention
+    flash_attention_varlen: null  # 例: "flash_attn.flash_attn_varlen_func"
+    # 带 KV cache 的 decode attention
+    paged_attention: null         # 例: "vllm._custom_ops.paged_attention_v2"
+    # PyTorch 原生 SDPA 是否可用（兜底路径）
+    sdpa_available: null          # true / false
+    # KV cache 的内存布局
+    kv_cache_layout: null         # 例: "NHD" / "HND" / 自定义
+    # K 与 V 是否用同一种布局。部分实现里两者不同，单个 kv_cache_layout 表达不了
+    k_v_layout_same: null         # true / false
+    # 分页算子支持的 block_size 取值集合或整除约束。
+    # 没有它，block_size 选型的碎片/效率权衡算得出来却收不了口
+    supported_block_sizes: []     # 例: [16, 32] 或 ["必须是 16 的倍数"]
+    # KV 能否存成低于 16 bit
+    kv_cache_dtype_supported: []  # 例: ["fp16", "bf16", "fp8_e4m3"]
+    # head_dim 的取值限制
+    max_head_dim: null
+    supported_head_dims: []       # 例: [64, 128]
+    # 算子是否以整块为粒度读取 KV。为真时回收的块必须清尾部，
+    # 否则多轮对话会串数据——表现为偶发的、与并发历史相关的输出异常
+    block_granular_read: null     # true / false
+    # 能否做"带已有 KV 的 prefill"
+    chunked_prefill_supported: null
+    prefix_cache_supported: null
+    # 索引元数据的约定：整数位宽、放在设备还是主机、无效位置填什么
+    metadata_dtype: null          # 例: "int32"
+    metadata_device: null         # "device" / "host"
+    block_table_padding_value: null
+    # 是否支持 MLA（压缩 KV 的那一类）专用算子
+    mla_support: null             # true / false
+    # MLA 的 KV 能否随张量并行切分。mla_support 只说有无算子，不说切分行为
+    mla_kv_shardable: null        # true / false
+    # 支持的 mask / 稀疏模式
+    supported_mask_modes: []
+    constraints: {}
+
+  moe:
+    grouped_gemm: null            # 例: "grouped_gemm.ops.gmm"
+    topk_gating: null
+    token_permute: null           # dispatch
+    token_unpermute: null         # combine
+    # 专家并行的 all-to-all 实现
+    expert_parallel_dispatch: null
+    constraints: {}
+
+  normalization:
+    rmsnorm: null
+    layernorm: null
+    # 是否有 residual+norm 融合
+    fused_add_norm: null
+    constraints: {}
+
+  activation:
+    swiglu: null
+    geglu: null
+    constraints: {}
+
+  rope:
+    apply_rotary: null
+    interleaved_supported: null   # true / false
+    constraints: {}
+
+  quantization:
+    int8_gemm: null               # 例: "torch._int_mm"
+    fp8_gemm: null
+    int4_gemm: null
+    dynamic_quant: null
+    # 支持的量化格式
+    supported_formats: []         # 例: ["w8a8", "w8a16", "w4a16"]
+    # 缩放因子的粒度。粒度对不上量化产物就加载不了
+    scale_granularity: []         # 例: ["per_tensor", "per_channel", "per_group"]
+    supported_group_sizes: []     # 例: [64, 128]
+    # 累加器精度，以及反量化是在算子内还是算子外做
+    accumulator_dtype: null       # 例: "int32" / "fp32"
+    requant_inside_kernel: null   # true / false
+    # 量化 GEMM 的 epilogue 能否融 bias / 激活。
+    # 不能的话量化与算子融合会互相排斥，要在两者间取舍
+    epilogue_fusion_supported: null
+    # grouped GEMM 有没有量化版本。没有的话 MoE 的专家权重量化不了
+    grouped_gemm_quantized: null  # true / false
+    # 权重是否需要转换成特殊内存布局才能被量化算子接受
+    weight_layout_requirement: null
+    constraints: {}
+
+  memory:
+    # 软件预取：把权重提前搬进片上缓存。
+    # 注意这里问的不是统一内存的页迁移，也不是缓存驻留策略，
+    # 而是"以数据依赖为栅栏的跨算子预取"。详见 docs/pending/weight-prefetch.md
+    weight_prefetch:
+      available: null             # true / false
+      api: null
+      # 预取语义：以 tensor 依赖为栅栏？还是纯异步 memcpy？
+      semantics: null
+    # 统一内存 / 页迁移
+    unified_memory: null          # true / false
+    host_offload_api: null
+
+# ------------------------------------------------------------------------------
+# 8. 诊断与排障
+#    —— runtime-debug、oom-analysis 依赖这里。
+# ------------------------------------------------------------------------------
+diagnostics:
+  _status: unknown
+
+  # 设备状态查询命令，CUDA 侧对应 nvidia-smi
+  smi_command: null               # 例: "nvidia-smi"
+  smi_query_memory: null          # 例: "nvidia-smi --query-gpu=memory.used --format=csv"
+  # 查询占用设备的进程及其显存。残留进程占卡是 OOM 的高频根因，
+  # 没有这条命令就只能把该项标为"未排除"
+  smi_query_processes: null       # 例: "nvidia-smi --query-compute-apps=pid,used_memory --format=csv"
+  # 查掉卡、硬件错误计数。用于区分软件故障与硬件故障
+  device_health_query: null
+  # 驱动 / 运行时 / 扩展包的版本查询。基线的环境指纹要记这个，
+  # smi_command 只查设备状态，不给软件栈版本
+  version_query_command: null
+
+  # 让下发变同步的环境变量。异步执行下报错位置不等于出错位置，
+  # 有这个开关就能一步定位；没有则退化为手工插同步点二分，慢一个数量级
+  launch_blocking_env: null       # 例: "CUDA_LAUNCH_BLOCKING=1"
+  # 设备侧断言开关。开启后越界能给出可读信息而非笼统的内存错误
+  device_assert_enable: null
+
+  # 错误码体系。runtime-debug 的分类表依赖它。
+  # 按"症状 -> 特征串"组织，填你的 runtime 实际输出的关键字。
+  error_signatures:
+    device_timeout: []            # 例: ["CUDA error: the launch timed out"]
+    illegal_memory_access: []     # 例: ["an illegal memory access was encountered"]
+    out_of_memory: []             # 例: ["CUDA out of memory", "OutOfMemoryError"]
+    collective_timeout: []        # 例: ["NCCL timeout", "Watchdog caught collective"]
+    kernel_launch_failure: []
+    compile_error: []
+
+  # OOM 来源分类。oom-analysis 的 Step0 依赖它。
+  # 不同 allocator 的 OOM 对应不同处置路径。
+  oom_sources:
+    caching_allocator: []         # 例: ["CUDA out of memory", "Tried to allocate"]
+    workspace_allocator: []       # 临时工作区 OOM 的特征串，没有就留空
+    collective_buffer: []         # 通信缓冲 OOM 的特征串
+    host_memory: []
+
+  # 内存分析工具
+  memory_tools:
+    snapshot_visualizer: null     # 例: "https://docs.pytorch.org/memory_viz"
+    deep_analysis_tool: null      # 例: "mosaic"
+
+  # 竞态/内存检查器，对应 compute-sanitizer / mssanitizer
+  sanitizer:
+    available: null
+    command: null
+    tools: []                     # 例: ["memcheck", "racecheck", "synccheck"]
+
+# ------------------------------------------------------------------------------
+# 9. 精度调试工具栈
+#    —— 3 个训练精度领域依赖这里，是目前阻塞最大的一节。
+#    没有现成工具时的建设方案见 docs/pending/_precision-toolchain.md。
+# ------------------------------------------------------------------------------
+precision_tools:
+  _status: unknown
+
+  # 是否有框架级的张量 dump / 比对工具（精度诊断的执行底座）
+  dump_framework:
+    available: null               # true / false
+    name: null
+    # 支持的采集粒度
+    levels: []                    # 例: ["module", "api", "kernel"]
+    # 支持的采集内容
+    modes: []                     # 例: ["statistics", "tensor", "md5"]
+    # 比对命令
+    compare_command: null
+    # 溢出检测
+    overflow_check_command: null
+
+  # 没有现成工具时的兜底：是否能用 PyTorch 原生 hook 自建
+  pytorch_hooks_usable: null      # true / false
+
+  # 确定性计算支持程度
+  determinism:
+    deterministic_algorithms_supported: null   # true / false / "partial"
+    # 已知的非确定性算子清单
+    known_nondeterministic_ops: []
+    # 集合通信是否确定性
+    collective_deterministic: null
+
+# ------------------------------------------------------------------------------
+# 10. 训练框架
+#     —— oom-analysis、log-visualization、precision 系列的示例路径依赖这里。
+# ------------------------------------------------------------------------------
+training_framework:
+  # 注意：log-visualization 在本节不是 verified 时会告警，提示先用一份真实日志
+  # 核对字段名。照抄 cuda-reference 的取值填完后第一次运行一定会撞到这个告警，
+  # 这是有意的——日志字段名是最容易被框架版本悄悄改掉的一类约定，
+  # 抄来的值碰巧对不上时，脚本会「解析成功但一条数据都没抓到」
+  _status: unknown
+  name: null                      # 例: "torchtitan" / "Megatron-LM" / 自研
+  config_style: null              # 例: "toml" / "python-registry" / "yaml" / "argparse"
+  entrypoint: null
+  # 训练日志格式。log-visualization 的正则依赖它
+  log_format:
+    style: null                   # 例: "torchtitan" / "megatron" / "custom"
+    # 各指标在日志中的字面 key，没有就留 null。
+    # 每项既可以填一个字符串，也可以填字符串列表——同一份日志里同一指标
+    # 出现多种写法是常态（不同 rank、不同阶段、框架升级前后），
+    # 填列表时脚本会逐个尝试。例: loss: ["loss:", "lm loss:", "train_loss="]
+    metric_keys:
+      step: null                  # 例: "step:"
+      loss: null                  # 例: "loss:"
+      grad_norm: null             # 例: "grad_norm:"
+      memory: null
+      throughput: null            # tokens/s
+      tflops: null
+      mfu: null
+      step_time: null
+
+# ------------------------------------------------------------------------------
+# 11. 推理框架
+#     —— migrator、kvcache、parallel-impl、quantization 的落地契约依赖这里。
+# ------------------------------------------------------------------------------
+inference_framework:
+  _status: unknown
+  # 目标推理框架。决定 migrator 的"框架部署模式"往哪接
+  name: null                      # 例: "vLLM" / "SGLang" / "TensorRT-LLM" / 自研
+  version: null                   # 基线的环境指纹要记
+  # 模型注册/接入的契约入口
+  model_registry_path: null
+  # 模型类必须实现的接口
+  required_interfaces: []
+  config_format: null             # 例: "yaml" / "json"
+  # 框架实际支持哪些并行维度。框架不支持的切分方案是空谈，
+  # 并行选型要先拿这个过滤候选
+  supported_parallelism: []       # 例: ["tp", "pp", "ep", "dp"]
+  # 框架怎么把分页索引元数据传给模型（block_table / slot_mapping 的传递契约）
+  attention_metadata_contract: null
+  # KV cache 由谁分配、从哪个入口分配
+  kv_cache_allocation_entrypoint: null
+  # 是否支持独立部署（自管 Runner，不依赖框架）
+  standalone_mode_supported: null
+
+# ------------------------------------------------------------------------------
+# 12. 显式登记：已知不支持 / 未确认的能力
+#     填这里的内容会被 skills 读到，用于在执行前提醒"这条路走不通"。
+# ------------------------------------------------------------------------------
+unknown_or_unsupported:
+  # 格式: - capability: <profile 中的字段路径>
+  #         status: not_supported | unknown
+  #         reason: <原因>
+  #         affects: [<受影响的 skill 名>]
+  - capability: null
+    status: null
+    reason: null
+    affects: []
