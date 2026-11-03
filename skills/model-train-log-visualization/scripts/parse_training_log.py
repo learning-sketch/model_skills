@@ -55,6 +55,7 @@ __all__ = [
     "compute_statistics",
     "load_metric_aliases_from_profile",
     "parse_log_file",
+    "parse_metric_key_overrides",
     "parse_numeric_token",
     "strip_ansi_escape_sequences",
 ]
@@ -1174,7 +1175,7 @@ def _dump_json(payload: Dict[str, object], non_finite_policy: str) -> str:
 # ------------------------------------------------------------------------------
 # 命令行
 # ------------------------------------------------------------------------------
-def _parse_metric_key_overrides(raw_overrides: Sequence[str]) -> Dict[str, List[str]]:
+def parse_metric_key_overrides(raw_overrides: Sequence[str]) -> Dict[str, List[str]]:
     """解析 ``--metric-key name=alias1,alias2``。
 
     Args:
@@ -1298,7 +1299,7 @@ def _resolve_aliases(
     if arguments.profile is not None:
         profile_aliases, warnings = load_metric_aliases_from_profile(arguments.profile)
 
-    override_aliases = _parse_metric_key_overrides(arguments.metric_key)
+    override_aliases = parse_metric_key_overrides(arguments.metric_key)
     selected = None
     if arguments.metrics:
         selected = [item.strip() for item in arguments.metrics.split(",") if item.strip()]

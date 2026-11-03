@@ -47,8 +47,8 @@ from parse_training_log import (  # noqa: E402  （需要先补 sys.path 才能�
     compare_parsed_logs,
     load_metric_aliases_from_profile,
     parse_log_file,
+    parse_metric_key_overrides,
 )
-from parse_training_log import _parse_metric_key_overrides  # noqa: E402
 
 EXIT_PLOT_ERROR = 6
 
@@ -675,7 +675,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         profile_aliases: Dict[str, List[str]] = {}
         if arguments.profile is not None:
             profile_aliases, setup_warnings = load_metric_aliases_from_profile(arguments.profile)
-        override_aliases = _parse_metric_key_overrides(arguments.metric_key)
+        override_aliases = parse_metric_key_overrides(arguments.metric_key)
     except (ValueError, RuntimeError) as error:
         print(f"错误: {error}", file=sys.stderr)
         return EXIT_INPUT_ERROR
