@@ -1,0 +1,398 @@
+# ==============================================================================
+# CUDA 参考 Profile
+# ==============================================================================
+# 这份文件有两个用途：
+#   1. 作为 _TEMPLATE.yaml 的填写示例 —— 展示每个字段应该填什么形态的值
+#   2. 作为"类 CUDA 自研芯片"的对位基线 —— 你的芯片若对标 CUDA，
+#      大部分字段可以从这里出发改写
+#
+# 注意：
+# - 设备规格一节填的是 NVIDIA H100 SXM5 的公开标称值，仅作示例。
+#   用于容量规划前请以你实际使用的卡型官方规格书为准。
+# - 本文件不是一份"可直接运行"的 profile。它描述的是通用 CUDA 生态，
+#   具体算子库（FlashAttention / vLLM / grouped_gemm）需按你的实际依赖调整。
+# ==============================================================================
+
+schema_version: 1
+
+vendor:
+  name: "NVIDIA"
+  chip_family: "Hopper (H100)"
+  architecture_class: "SIMT+TensorCore"
+
+# ------------------------------------------------------------------------------
+# PyTorch 集成层：CUDA 是 PyTorch 原生后端，无需扩展包
+# ------------------------------------------------------------------------------
+pytorch:
+  _status: verified
+
+  device_type: "cuda"
+  extension_module: null            # 原生内置，不需要 import 扩展
+  device_namespace: "torch.cuda"
+  uses_privateuse1_backend: false
+
+  api:
+    synchronize: "torch.cuda.synchronize"
+    set_device: "torch.cuda.set_device"
+    current_device: "torch.cuda.current_device"
+    device_count: "torch.cuda.device_count"
+    empty_cache: "torch.cuda.empty_cache"
+    max_memory_allocated: "torch.cuda.max_memory_allocated"
+    memory_allocated: "torch.cuda.memory_allocated"
+    reset_peak_memory_stats: "torch.cuda.reset_peak_memory_stats"
+    set_per_process_memory_fraction: "torch.cuda.set_per_process_memory_fraction"
+    record_memory_history: "torch.cuda.memory._record_memory_history"
+    dump_memory_snapshot: "torch.cuda.memory._dump_snapshot"
+    stream_class: "torch.cuda.Stream"
+    event_class: "torch.cuda.Event"
+    stream_context: "torch.cuda.stream"
+    record_stream: "Tensor.record_stream"
+    deterministic_api: "torch.use_deterministic_algorithms"
+
+  # CUDA 是 PyTorch memory snapshot 的主要目标平台，格式即上游标准
+  memory_snapshot_format_compatible: true
+
+# ------------------------------------------------------------------------------
+# 设备规格（H100 SXM5 公开标称值，示例用途）
+# ------------------------------------------------------------------------------
+devices:
+  _status: verified
+  models:
+    - model: "H100 SXM5 80GB"
+      memory_gb: 80
+      memory_bandwidth_gb_s: 3350      # 3.35 TB/s HBM3
+      compute:                          # 均为 dense（非 2:4 稀疏）值
+        fp32_tflops: 67
+        tf32_tflops: 494.5
+        fp16_tflops: 989.4
+        bf16_tflops: 989.4
+        fp8_tflops: 1978.9
+        int8_tops: 1978.9
+        int4_tops: null                 # Hopper Tensor Core 不提供 INT4 路径
+      compute_units:
+        type: "SM"
+        count: 132
+        detail: {}
+      cache:
+        l2_mb: 50
+        shared_mem_per_unit_kb: 228     # 每 SM 可配置共享内存上限
+
+# ------------------------------------------------------------------------------
+# 互联与集合通信
+# ------------------------------------------------------------------------------
+interconnect:
+  _status: verified
+  intra_node:
+    name: "NVLink 4.0 + NVSwitch"
+    bandwidth_gb_s: 450               # 单向。双向总带宽 900 GB/s
+    topology: "all-to-all"            # NVSwitch 全互联
+    cards_per_node: 8
+  inter_node:
+    name: "InfiniBand NDR 400Gb/s"
+    bandwidth_gb_s: 50                # 400 Gb/s ≈ 50 GB/s，每卡一张网卡时
+
+collective:
+  _status: verified
+  library: "NCCL"
+  torch_backend: "nccl"
+  primitives:
+    - all_reduce
+    - all_gather
+    - reduce_scatter
+    - all_to_all
+    - broadcast
+    - send_recv
+  env_vars:
+    buffer_size: "NCCL_BUFFSIZE"
+    connect_timeout: "NCCL_COMM_TIMEOUT"       # 另见 TORCH_NCCL_BLOCKING_WAIT
+    exec_timeout: "TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"
+    interface_select: "NCCL_SOCKET_IFNAME"
+    debug_level: "NCCL_DEBUG"
+  # CUDA 生态没有昇腾 MC2 那种"通信+计算编成一个算子"的一等公民能力。
+  # 近似做法是用多流把 NCCL 与 GEMM overlap，或用 DeepEP 这类库做 MoE 专用重叠。
+  fused_comm_compute_ops:
+    available: false
+    ops: []
+
+# ------------------------------------------------------------------------------
+# Profiler
+# ------------------------------------------------------------------------------
+profiler:
+  _status: verified
+
+  api: "torch.profiler.profile"
+  torch_profiler_compatible: true
+  cli_tool: "nsys"                    # kernel 级细粒度指标用 ncu
+
+  output:
+    root_dir_pattern: "*.nsys-rep"
+    # torch.profiler 没有昇腾那种开箱即用的 kernel_details.csv。
+    # 需要用 nsys stats 导出，或从 chrome trace 自行聚合。
+    # 见 tools/profiler_adapter/ 的说明。
+    kernel_table_file: null
+    trace_file: "trace.json"          # export_chrome_trace 产物
+    op_summary_file: null
+    comm_file: null
+
+  # torch.profiler 的 chrome trace 事件字段 → 统一 schema 的映射。
+  # 这是 perf-breakdown 适配层的实际输入。
+  kernel_table_columns:
+    step_id: null                     # chrome trace 无原生 step 列，需由 ProfilerStep 标注推导
+    name: "name"
+    duration_us: "dur"
+    start_time_us: "ts"
+    stream_id: "args.stream"
+    task_type: "cat"                  # kernel / gpu_memcpy / gpu_memset / cpu_op
+    device_id: "args.device"
+    wait_time_us: null
+    block_dim: "args.grid"            # 需与 args.block 一起换算
+    input_shapes: "args.Input Dims"   # 需 record_shapes=True
+    output_shapes: null
+
+  task_type_values:
+    compute: ["kernel"]
+    communication: ["nccl"]           # NCCL kernel 名以 nccl 开头，需按名字前缀二次识别
+    memory: ["gpu_memcpy", "gpu_memset"]
+    host_fallback: ["cpu_op"]         # 语义不同于昇腾 AI_CPU，仅作近似
+
+  hardware_counters:
+    available: true                   # 需用 Nsight Compute (ncu) 单独采集
+    compute_utilization: "sm__throughput.avg.pct_of_peak_sustained_elapsed"
+    memory_utilization: "dram__throughput.avg.pct_of_peak_sustained_elapsed"
+    tensor_core_utilization: "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active"
+    memory_bound_threshold: 0.6
+    low_utilization_threshold: 0.3
+
+# ------------------------------------------------------------------------------
+# 图模式 / 编译
+# ------------------------------------------------------------------------------
+graph:
+  _status: verified
+
+  modes: ["eager", "torch_compile", "graph_capture"]
+
+  torch_compile_backend: "inductor"
+  torch_compile_supported: true
+
+  graph_capture:
+    available: true
+    api: "torch.cuda.CUDAGraph"
+    torch_compile_mode: "reduce-overhead"
+    constraints:
+      static_shape_required: true
+      static_address_required: true          # 输入输出需在固定的静态缓冲区
+      host_sync_forbidden: true              # 捕获期禁止 .item() / .cpu() 等
+      dynamic_control_flow_forbidden: true
+      collective_ops_supported: true         # NCCL 可入图，需注意捕获时的通信器状态
+
+  # CUDA 没有"用 scope 标注一段子图、由编译器编成单个二进制 kernel"的
+  # 一等公民 API。最接近的是 Inductor 的 kernel fusion（自动、无 scope 标注）
+  # 和手写 persistent/mega kernel（需自己写）。
+  kernel_fusion_codegen:
+    available: "partial"
+    api: "torch.compile (Inductor 自动融合)"
+    scope_annotation: null
+    notes: >
+      Inductor 会自动融合 pointwise/reduction，但不提供用户标注的融合范围，
+      也不把 GEMM 这类库调用融进同一个二进制。若需要"一段子图一个 kernel"，
+      需手写 persistent kernel 或用 Triton 自行实现。
+
+# ------------------------------------------------------------------------------
+# 算子库
+# ------------------------------------------------------------------------------
+kernels:
+  _status: verified
+
+  attention:
+    flash_attention_varlen: "flash_attn.flash_attn_varlen_func"
+    paged_attention: "vllm._custom_ops.paged_attention_v2"   # 或 flashinfer
+    sdpa_available: true
+    kv_cache_layout: "NHD"            # vLLM 默认；FlashInfer 支持 NHD/HND
+    mla_support: "partial"            # FlashMLA / FlashInfer 有实现，非官方统一 API
+    supported_mask_modes: ["causal", "sliding_window", "custom_mask", "alibi"]
+
+  moe:
+    grouped_gemm: "grouped_gemm.ops.gmm"        # 或 vLLM fused_moe / Triton
+    topk_gating: "torch.topk"                   # 通常手写，无统一融合算子
+    token_permute: "vllm.model_executor.layers.fused_moe"
+    token_unpermute: "vllm.model_executor.layers.fused_moe"
+    expert_parallel_dispatch: "deep_ep"         # DeepEP，需单独安装
+
+  normalization:
+    rmsnorm: "vllm._custom_ops.rms_norm"        # 或 apex / 自写 Triton
+    layernorm: "torch.nn.functional.layer_norm"
+    fused_add_norm: "vllm._custom_ops.fused_add_rms_norm"
+
+  activation:
+    swiglu: "vllm._custom_ops.silu_and_mul"
+    geglu: "vllm._custom_ops.gelu_and_mul"
+
+  rope:
+    apply_rotary: "vllm._custom_ops.rotary_embedding"
+    interleaved_supported: true
+
+  quantization:
+    int8_gemm: "torch._int_mm"
+    fp8_gemm: "torch._scaled_mm"
+    int4_gemm: null                   # 无 PyTorch 原生路径，需 Marlin / AWQ kernel
+    dynamic_quant: "vllm._custom_ops.scaled_int8_quant"
+    supported_formats: ["w8a8", "w8a16", "w4a16", "fp8"]
+    weight_layout_requirement: null   # 无强制特殊布局（Marlin 等 kernel 有自己的预处理）
+
+  memory:
+    # CUDA 没有与 torch_npu.npu_prefetch 语义相同的 API。
+    # cudaMemPrefetchAsync 作用于 Unified Memory 的页迁移，不是"把权重提前搬进片上缓存"。
+    # 语义上更接近的是 L2 persistence（cudaAccessPolicyWindow），但那是驻留策略
+    # 而非以 tensor 依赖为栅栏的预取。详见
+    # docs/pending-migration/model-infer-prefetch.md
+    weight_prefetch:
+      available: false
+      api: null
+      semantics: null
+    unified_memory: true
+    host_offload_api: "Tensor.to('cpu', non_blocking=True)"   # 配合 pinned memory
+
+# ------------------------------------------------------------------------------
+# 诊断与排障
+# ------------------------------------------------------------------------------
+diagnostics:
+  _status: verified
+
+  smi_command: "nvidia-smi"
+  smi_query_memory: "nvidia-smi --query-gpu=memory.used,memory.total --format=csv"
+
+  error_signatures:
+    device_timeout:
+      - "CUDA error: the launch timed out and was terminated"
+      - "Watchdog caught collective operation timeout"
+    illegal_memory_access:
+      - "CUDA error: an illegal memory access was encountered"
+      - "device-side assert triggered"
+    out_of_memory:
+      - "CUDA out of memory"
+      - "torch.OutOfMemoryError"
+    collective_timeout:
+      - "NCCL timeout"
+      - "Watchdog caught collective operation timeout"
+      - "NCCL WARN"
+    kernel_launch_failure:
+      - "unspecified launch failure"
+      - "CUDA error: invalid configuration argument"
+    compile_error:
+      - "BackendCompilerFailed"
+      - "torch._dynamo.exc"
+
+  oom_sources:
+    caching_allocator:
+      - "CUDA out of memory"
+      - "Tried to allocate"
+      - "torch.OutOfMemoryError"
+    # CUDA 的临时工作区由 caching allocator 统一管理，没有独立的 workspace
+    # allocator，因此不存在昇腾那种"workspace OOM"的独立分类。
+    workspace_allocator: []
+    collective_buffer:
+      - "NCCL WARN Cuda failure 'out of memory'"
+    host_memory:
+      - "DefaultCPUAllocator: not enough memory"
+
+  memory_tools:
+    snapshot_visualizer: "https://docs.pytorch.org/memory_viz"
+    deep_analysis_tool: "mosaic"      # https://github.com/facebookresearch/mosaic
+
+  sanitizer:
+    available: true
+    command: "compute-sanitizer"
+    tools: ["memcheck", "racecheck", "synccheck", "initcheck"]
+
+# ------------------------------------------------------------------------------
+# 精度调试工具栈
+# ------------------------------------------------------------------------------
+precision_tools:
+  _status: verified
+
+  # CUDA 生态没有与华为 msprobe 对等的开源框架级 dump/比对工具。
+  # 常见做法是自建 hook dump + 自写比对，或使用各家内部精度平台。
+  dump_framework:
+    available: false
+    name: null
+    levels: []
+    modes: []
+    compare_command: null
+    overflow_check_command: null
+
+  pytorch_hooks_usable: true          # register_forward_hook / register_full_backward_hook
+
+  determinism:
+    deterministic_algorithms_supported: true
+    known_nondeterministic_ops:
+      - "index_add / scatter_add (atomic 累加顺序不定)"
+      - "F.interpolate backward"
+      - "某些 cuDNN 卷积 backward 算法"
+    collective_deterministic: "partial"   # NCCL 规约顺序受拓扑与算法选择影响
+
+# ------------------------------------------------------------------------------
+# 训练框架（示例：torchtitan）
+# ------------------------------------------------------------------------------
+training_framework:
+  _status: assumed                    # 按你实际使用的框架改写
+  name: "torchtitan"
+  config_style: "toml"
+  entrypoint: "torchtitan.train"
+  log_format:
+    style: "torchtitan"
+    metric_keys:
+      step: "step:"
+      loss: "loss:"
+      grad_norm: "grad_norm:"
+      memory: "memory:"
+      throughput: "tps:"
+      tflops: "tflops:"
+      mfu: "mfu:"
+      step_time: "elapsed_time_per_step:"
+
+# ------------------------------------------------------------------------------
+# 推理框架（示例：vLLM）
+# ------------------------------------------------------------------------------
+inference_framework:
+  _status: assumed                    # 按你实际使用的框架改写
+  name: "vLLM"
+  model_registry_path: "vllm/model_executor/models/registry.py"
+  required_interfaces:
+    - "forward(input_ids, positions, kv_caches, attn_metadata) -> hidden_states"
+    - "compute_logits(hidden_states, sampling_metadata)"
+    - "load_weights(weights: Iterable[Tuple[str, torch.Tensor]])"
+  config_format: "python/json"
+  standalone_mode_supported: true
+
+unknown_or_unsupported:
+  - capability: kernels.memory.weight_prefetch
+    status: not_supported
+    reason: >
+      CUDA 无与 torch_npu.npu_prefetch 语义等价的 API。cudaMemPrefetchAsync
+      面向 Unified Memory 页迁移，L2 persistence 是驻留策略，二者都不是
+      "以 tensor 依赖为栅栏、把权重提前搬进片上缓存"。
+    affects: ["model-infer-prefetch"]
+
+  - capability: collective.fused_comm_compute_ops
+    status: not_supported
+    reason: >
+      无 MC2 类通信计算融合算子。MoE dispatch/combine 与计算的重叠需靠
+      多流 + DeepEP 这类库手工编排。
+    affects: ["model-infer-parallel-impl", "model-infer-fusion"]
+
+  - capability: graph.kernel_fusion_codegen
+    status: not_supported
+    reason: >
+      无用户可标注范围的"子图编成单个二进制 kernel"能力。Inductor 自动融合
+      不覆盖 GEMM 库调用，也不接受 scope 标注。
+    affects: ["model-infer-superkernel"]
+
+  - capability: precision_tools.dump_framework
+    status: not_supported
+    reason: >
+      无 msprobe 对等的开源 dump/比对框架。需基于 PyTorch hook 自建，
+      或接入内部精度平台。
+    affects:
+      - "model-train-precision-determinism"
+      - "model-train-precision-nonfinite"
+      - "model-train-precision-numerical-mismatch"

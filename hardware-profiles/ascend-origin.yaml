@@ -1,0 +1,425 @@
+# ==============================================================================
+# 昇腾原始 Profile（溯源对照用，不用于执行）
+# ==============================================================================
+# 这份文件记录的是 hicann/cannbot-skills 原始 skills 所隐含的硬件假设。
+# 它不是给你的芯片用的 —— 它的作用是让你在读迁移后的 skill 时，
+# 能随时对照"这条规则原本绑的是什么"。
+#
+# 字段值全部摘自 https://github.com/hicann/cannbot-skills 的 model/ 目录。
+# 未在原仓文件中出现的信息一律留 null，不做补全。
+#
+# 典型用法：
+#   做 code review 时，把本文件与你的 profile 并排看，
+#   凡是本文件有值而你的 profile 为 null 的字段，都是潜在的迁移缺口。
+# ==============================================================================
+
+schema_version: 1
+
+vendor:
+  name: "华为"
+  chip_family: "Ascend (Atlas A2 / A3)、Kirin 9030（端侧）"
+  # 昇腾达芬奇架构的 Cube 与 Vector 是分离的计算单元，
+  # 这是它与 SIMT 类架构最根本的差异，也是多个 skill 不可直接迁移的根因。
+  architecture_class: "heterogeneous"
+
+pytorch:
+  _status: verified
+
+  device_type: "npu"
+  extension_module: "torch_npu"       # Ascend Extension for PyTorch
+  device_namespace: "torch.npu"
+  uses_privateuse1_backend: true
+
+  api:
+    synchronize: "torch.npu.synchronize"
+    set_device: "torch.npu.set_device"
+    current_device: "torch.npu.current_device"
+    device_count: "torch.npu.device_count"
+    empty_cache: "torch.npu.empty_cache"
+    max_memory_allocated: "torch.npu.max_memory_allocated"
+    memory_allocated: "torch.npu.memory_allocated"
+    reset_peak_memory_stats: "torch.npu.reset_peak_memory_stats"
+    set_per_process_memory_fraction: "torch.npu.set_per_process_memory_fraction"
+    record_memory_history: "torch.npu.memory._record_memory_history"
+    dump_memory_snapshot: "torch.npu.memory._dump_snapshot"
+    stream_class: "torch.npu.Stream"
+    event_class: "torch.npu.Event"
+    stream_context: "torch.npu.stream"
+    record_stream: "Tensor.record_stream"
+    deterministic_api: "torch.use_deterministic_algorithms"
+
+  memory_snapshot_format_compatible: true   # 与 PyTorch 上游 snapshot 结构同构
+
+devices:
+  _status: verified
+  models:
+    # 原仓 skills 只在少数位置写死规格，这里只记录确实出现过的值。
+    - model: "Ascend 910B"
+      memory_gb: 64                   # model-train-oom-analysis 中作为示例显存
+      memory_bandwidth_gb_s: null     # 原仓未给出
+      compute: {}
+      compute_units:
+        type: "cube+vector"
+        count: null
+        detail:
+          # model-infer-multi-stream 的 platform_config 示例值
+          ai_core_cnt: 24             # Cube 核（AIC）
+          vector_core_cnt: 48         # Vector 核（AIV）
+      cache: {}
+
+interconnect:
+  _status: verified
+  intra_node:
+    name: "HCCS"
+    bandwidth_gb_s: 56                # model-infer-parallel-analysis 中 A2 的取值
+    topology: null
+    cards_per_node: null
+  inter_node:
+    name: null
+    bandwidth_gb_s: null
+
+collective:
+  _status: verified
+  library: "HCCL"
+  torch_backend: "hccl"
+  primitives:
+    - all_reduce
+    - all_gather
+    - reduce_scatter
+    - all_to_all
+    - broadcast
+    - send_recv
+  env_vars:
+    buffer_size: "HCCL_BUFFSIZE"
+    connect_timeout: "HCCL_CONNECT_TIMEOUT"
+    exec_timeout: "HCCL_EXEC_TIMEOUT"
+    interface_select: "HCCL_IF_IP"
+    debug_level: null
+    # 原仓额外出现的
+    extra:
+      - "HCCL_OP_EXPANSION_MODE=AIV"
+      - "HCCL_IF_BASE_PORT"
+  # MC2 是昇腾把集合通信与矩阵计算编进同一算子的能力，
+  # 这是 CUDA 生态没有一等公民对应物的关键特性。
+  fused_comm_compute_ops:
+    available: true
+    ops:
+      - "npu_moe_distribute_dispatch_v2"
+      - "npu_moe_distribute_combine_v2"
+      - "npu_all_gather_base_mm"
+      - "npu_mm_all_reduce_base"
+      - "npu_alltoallv_gmm"
+    constraints:
+      # model-infer-fusion / parallel-impl / runtime-debug 都重复了这条约束
+      - "A2 常规 MC2 路径要求 moe_expert_num/(ep_world_size-shared_expert_rank_num) <= 24；A3 无此限制"
+
+profiler:
+  _status: verified
+
+  api: "torch_npu.profiler.profile"
+  torch_profiler_compatible: "partial"   # 接口形似 torch.profiler，但配置与产物不同
+  cli_tool: "msprof"                     # CANN 工具链；配套 MindStudio Insight
+
+  output:
+    root_dir_pattern: "*_ascend_pt/ASCEND_PROFILER_OUTPUT/"
+    kernel_table_file: "kernel_details.csv"
+    trace_file: "trace_view.json"
+    op_summary_file: "op_statistic.csv"
+    comm_file: "communication.json"
+
+  # 这是迁移成本最高的一处。昇腾 kernel_details.csv 在
+  # ExperimentalConfig(Level1 + PipeUtilization) 下有 47 列，
+  # 不开该配置只有 9 列，后续 perf-breakdown 全部失效。
+  kernel_table_columns:
+    step_id: "Step Id"
+    name: "Name"
+    duration_us: "Duration(us)"
+    start_time_us: "Start Time(us)"
+    stream_id: "Stream ID"
+    task_type: "Task Type"
+    device_id: "Device_id"
+    wait_time_us: "Wait Time(us)"
+    block_dim: "Block Dim"
+    input_shapes: "Input Shapes"
+    output_shapes: "Output Shapes"
+    # 昇腾特有，无通用对应
+    accelerator_core: "Accelerator Core"
+    op_state: "OP State"
+
+  task_type_values:
+    compute: ["AI_CORE", "MIX_AIC", "MIX_AIV", "AI_VECTOR_CORE"]
+    communication: ["HCCL", "COMMUNICATION"]
+    memory: []
+    # AI_CPU 表示算子没有 NPU 实现、掉回主机侧执行，是重要的性能告警信号。
+    # CUDA 生态没有完全对等的概念。
+    host_fallback: ["AI_CPU", "AICPU"]
+
+  hardware_counters:
+    available: true
+    # 达芬奇架构的流水线利用率指标，与 SIMT 的 SM 指标不是一套体系
+    compute_utilization: "aic_mac_ratio"
+    memory_utilization: "aic_mte2_ratio"
+    tensor_core_utilization: "cube_utilization(%)"
+    memory_bound_threshold: null
+    low_utilization_threshold: null
+    # model-recommend-analysis 中使用的判定阈值
+    thresholds_in_use:
+      - "aic/aiv_scalar_ratio >= 0.30 判为标量瓶颈"
+      - "cube_utilization < 20 判为 Cube 利用率不足"
+      - "aic_mac_ratio < 0.30 判为算力未打满"
+    # 完整计数器族
+    counter_families:
+      - "aic_mac_*"      # Cube 矩阵计算
+      - "aic_mte1_*"     # L1 -> L0 搬运
+      - "aic_mte2_*"     # HBM -> L1 搬运
+      - "aic_fixpipe_*"  # 定点流水
+      - "aiv_vec_*"      # Vector 计算
+      - "aiv_mte2_*"
+      - "aiv_mte3_*"
+
+graph:
+  _status: verified
+
+  modes: ["eager", "ge_graph", "npugraph_ex"]
+
+  torch_compile_backend: "npugraph_ex"       # 另有 torchair.get_npu_backend() 走 GE
+  torch_compile_supported: true
+
+  graph_capture:
+    available: true
+    api: "torch.npu.npugraph_ex"             # aclgraph，Capture & Replay
+    torch_compile_mode: null
+    constraints:
+      static_shape_required: true
+      static_address_required: true
+      host_sync_forbidden: true
+      dynamic_control_flow_forbidden: true
+      collective_ops_supported: true         # GE 路径需 torchair.patch_for_hcom()
+
+  # SuperKernel：由编译器把 scope 内算子融成一个二进制 kernel，减少下发开销。
+  # 仅 Atlas A3 + ge_graph + Decode 阶段生效。
+  kernel_fusion_codegen:
+    available: true
+    api: "superkernel_scope(enable, label, option)"
+    scope_annotation: 'option="stream-fusion=1"'
+    constraints:
+      - "仅 Atlas A3"
+      - "仅 exe_mode: ge_graph，与 eager / aclgraph 互斥"
+      - "仅 Decode 阶段，Prefill 因动态长度自动禁用"
+      - "scope 内不得含动态 shape、Python 控制流、Tiling 下沉算子"
+
+  # GE 路径特有：自动重排可能导致"切了流但没有真并行"
+  ge_specific:
+    auto_reorder: true
+    enable_inner_parallel: true
+    env_vars:
+      - "ENABLE_DYNAMIC_SHAPE_MULTI_STREAM=1"
+
+kernels:
+  _status: verified
+
+  attention:
+    flash_attention_varlen: "torch_npu.npu_fused_infer_attention_score / _v2"
+    paged_attention: "torch_npu.npu_fused_infer_attention_score(block_table=...)"
+    sdpa_available: true
+    # NZ 是昇腾私有的分形内存格式，bf16 下 NZ_DIM=16。
+    # 这是 KV cache / 量化权重布局不可直接迁移的根因之一。
+    kv_cache_layout: "PA_NZ / PA_BSND"
+    mla_support: true
+    mla_ops:
+      - "npu_mla_prolog_v3"
+      - "npu_kv_rmsnorm_rope_cache / _v2"
+      - "npu_sparse_flash_attention / _antiquant"
+      - "npu_lightning_indexer / npu_quant_lightning_indexer"
+    supported_mask_modes:
+      - "sparse_mode=0/1/2/3/4"
+      - "input_layout: TND / TND_NTD / BSH / BNSD / BSND_NBSD"
+    constraints:
+      - "sparse_mode=3/4 要求 atten_mask 固定为 [2048, 2048]"
+      - "MLA query head_dim ∈ {512, 128}，rope head_dim = 64"
+
+  moe:
+    grouped_gemm: "torch_npu.npu_grouped_matmul"
+    topk_gating: "torch_npu.npu_moe_gating_top_k / _softmax"
+    token_permute: "torch_npu.npu_moe_init_routing_v2 / npu_moe_re_routing"
+    token_unpermute: "torch_npu.npu_moe_finalize_routing"
+    expert_parallel_dispatch: "torch_npu.npu_moe_distribute_dispatch_v2"
+
+  normalization:
+    rmsnorm: "torch_npu.npu_rms_norm"
+    layernorm: null
+    fused_add_norm: "torch_npu.npu_add_rms_norm"
+
+  activation:
+    swiglu: "torch_npu.npu_swiglu"
+    geglu: null
+
+  rope:
+    apply_rotary: "torch_npu.npu_apply_rotary_pos_emb / npu_rotary_mul"
+    interleaved_supported: true
+    interleaved_op: "torch_npu.npu_interleave_rope"
+
+  quantization:
+    int8_gemm: "torch_npu.npu_quant_matmul"
+    fp8_gemm: null
+    int4_gemm: null
+    dynamic_quant: "torch_npu.npu_dynamic_quant"
+    supported_formats: ["w8a8", "w8a16", "w4a16"]
+    # post-load 需把权重转成 NZ 格式，这一步在 CUDA 生态没有对应动作
+    weight_layout_requirement: "NZ（需 npu_format_cast 转换）"
+    fused_quant_ops:
+      - "npu_dequant_swiglu_quant"
+      - "npu_swiglu_clip_quant"
+
+  memory:
+    # 这是 model-infer-prefetch 的全部依据，也是最难迁移的单点 API。
+    # 语义：以 depend tensor 为栅栏，把 weight 的前 size 字节提前搬进片上缓存。
+    weight_prefetch:
+      available: true
+      api: "torch_npu.npu_prefetch(weight, depend, size, offset=0)"
+      semantics: "以 tensor 依赖为栅栏的片上缓存预取"
+    unified_memory: null
+    host_offload_api: "torch_npu.empty_with_swapped_memory"
+
+diagnostics:
+  _status: verified
+
+  smi_command: "npu-smi info"
+  smi_query_memory: "npu-smi info"
+
+  # 昇腾错误码体系。这是 model-infer-runtime-debug 的核心资产，
+  # 也是整表需要替换的部分。
+  error_signatures:
+    device_timeout:
+      - "507014"                                   # aicore timeout
+      - "AclrtSynchronizeDeviceWithTimeout"
+      - "aicore timeout"
+      - "fftsplus aivector error"
+      - "Kernel task happen error, retCode=0x25"
+    illegal_memory_access:
+      - "EZ9999"                                   # 原仓仅在 description 出现，正文未展开
+      - "EE9999"
+    out_of_memory:
+      - "NPU out of memory"
+      - "ENOMEM"
+      - "Tried to allocate"
+    collective_timeout:
+      - "HCCL error"
+      - "HCCL_CONNECT_TIMEOUT"
+      - "HCCL_EXEC_TIMEOUT"
+    kernel_launch_failure:
+      - "SIGABRT"                                  # 算子约束违反 / 空 tensor
+    compile_error:
+      - "ERR03007"                                 # 图模式 graph break
+
+  oom_sources:
+    caching_allocator:
+      - "CachingAllocator"
+      - "torch.OutOfMemoryError"
+      - "NPU out of memory"
+    # 昇腾有独立的 workspace allocator，OOM 来源与 caching allocator 分开，
+    # 对应的处置手段是"调内存水线"而不是减 batch。CUDA 没有这个分类。
+    workspace_allocator:
+      - "workspace allocator"
+      - "workspace memory"
+    collective_buffer:
+      - "HCCL"
+      - "hccl"
+      - "communication"
+    host_memory: []
+
+  memory_tools:
+    snapshot_visualizer: null
+    deep_analysis_tool: "msmemscope (MindStudio MemScope)"
+
+  sanitizer:
+    available: true
+    command: "mssanitizer"
+    tools: ["memcheck", "racecheck", "synccheck"]
+
+precision_tools:
+  _status: verified
+
+  # msprobe 是 3 个 train-precision skill 的执行底座。
+  # 它提供的"分级 dump + 按调用实例对齐比对 + 溢出扫描"是一整套框架级能力，
+  # CUDA 生态没有开源对等物。
+  dump_framework:
+    available: true
+    name: "msprobe"
+    levels: ["L0", "L1", "mix"]       # L0=模块级，L1=API 级；mix 为模板默认
+    modes: ["statistics", "tensor", "md5", "nan_check"]
+    compare_command: "msprobe compare -i <config> -o <out> [-da]"
+    overflow_check_command: "msprobe overflow_check -i <config> -o <out>"
+    key_configs:
+      task: "statistics | tensor"
+      summary_mode: "md5（PyTorch 侧实为 CRC-32 判等）| statistics（max/min/mean/L2norm）"
+      bench_path: "以兼容 dump 为基准，只落差异节点的真实 tensor"
+      diff_nums: "差异节点数量上限"
+      data_mode: "采集方向（前向/反向）"
+      scope_list: "按模块/API 过滤采集范围"
+    compare_rules:
+      # 注意：这是 msprobe 包内默认阈值，与训练级验收门槛是两套标准
+      - "NormRelativeErr: input/params 全 <10% 而某 output >50% 判 error"
+      - "放大约 10x 判 warning"
+      - "-da 模式包内默认相对误差阈值 0.5（即 50%）"
+    outputs:
+      - "compare_result_rank*.json"
+      - "diff_analyze_*.json"
+      - "anomaly_analyze_{timestamp}.json"   # overflow_check 产物
+
+  pytorch_hooks_usable: true
+
+  determinism:
+    deterministic_algorithms_supported: true
+    known_nondeterministic_ops: []
+    collective_deterministic: null
+
+training_framework:
+  _status: verified
+  name: "torchtitan-npu"
+  config_style: "python-registry"     # config_registry.py 返回 TrainerConfig，--config 传注册名
+  entrypoint: "torchtitan_npu/entry.py"
+  log_format:
+    style: "torchtitan"
+    metric_keys:
+      step: "step:"
+      loss: "loss:"
+      grad_norm: "grad_norm:"
+      memory: "memory:"               # 格式 "memory: N GiB(N%)"
+      throughput: "tps:"
+      tflops: "tflops:"
+      mfu: "mfu:"                     # 格式 "mfu: N%"
+      step_time: "elapsed_time_per_step:"
+      extra: "indexer loss:"          # DeepSeek 类模型特有，可能跨行
+
+inference_framework:
+  _status: verified
+  name: "cann-recipes-infer"
+  model_registry_path: "cann-recipes-infer/executor/core/support_models.py"
+  required_interfaces:
+    - "ForCausalLM 契约"
+    - "forward_metadata 约定"
+    - "CacheEntry / get_cache_info"
+  config_format: "yaml"
+  standalone_mode_supported: true     # 原仓同时支持"独立部署"自管 Runner 模式
+  key_paths:
+    - "executor/core/kv_cache/"
+    - "executor/module/linear.py"
+    - "executor/utils/common_utils.py"
+    - "executor/utils/profiler_context.py"
+    - "executor/scripts/infer.sh"
+
+# 端侧（Kirin 9030）专有栈，仅 model-infer-harmony 使用
+edge_stack:
+  _status: verified
+  platform: "Kirin 9030 / HarmonyOS"
+  quantization_tool: "dopt"
+  graph_tool: "auto_optimizer"
+  converter: "omg --platform=kirin9030 --target=omc"
+  artifact_format: ".omc"
+  packaging: "CANNPAK"
+  hard_constraints:
+    - "omg 必须在 glibc>=2.35 容器内 + AscendC(ccec)，否则报 type MatMul don't support"
+    - "W4 仅支持 UINT4 [0,15]，须 quant_param_2=True"
+    - "cube M 维需对齐补维"
+  note: "整条链路为华为端侧专有，与云侧 CUDA 类芯片无共同基础"
