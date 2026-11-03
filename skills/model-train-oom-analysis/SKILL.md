@@ -27,6 +27,9 @@ OOM 不是一个问题，是三个问题共用了一条报错：**配置本身�
 | `pytorch.api.reset_peak_memory_stats` | 分阶段测峰值（前向 / 反向 / 优化器各一段） | 只能测全程峰值，定位不到阶段 |
 | `pytorch.api.empty_cache` | 碎片缓解与「到底是不是真不够」的判别 | 无法区分「真不够」与「缓存占着不还」 |
 | `pytorch.api.set_per_process_memory_fraction` | 设内存水线，把偶发 OOM 变成稳定复现 | 只能靠加大 batch 硬复现，代价高 |
+| `pytorch.allocator_config.expandable_segments_key` / `max_split_size_key` | Step 4.0 零代价档的两个开关名 | **这一档整体失效**。只能告诉用户「去开可扩展段」而说不出开关叫什么，等于让他自己翻文档 |
+| `pytorch.allocator_config.entrypoint` | 这些开关是环境变量还是运行时 API | 按环境变量处理；若实际只有 API，用户会把变量设在进程里却不生效 |
+| `pytorch.allocator_config.expandable_segments_graph_safe` | 可扩展段与图捕获能否同时开 | 推理场景不敢推荐开可扩展段，白白放弃碎片最有效的解法 |
 | `pytorch.device_namespace` | 所有示例代码的命名空间 | 示例需要手工改写 |
 | `devices.models[].memory_gb` | Step 1 静态估算的预算上限 | 估算只能给绝对值，给不出「超了多少」 |
 | `collective.library` / `collective.torch_backend` | 注入到语义分类的通信关键字，使自研通信库的分配能被归类 | 只能靠默认关键字（`nccl` / `gloo` / `c10d` 等）识别，自研库的缓冲会落进未分类 |
@@ -330,11 +333,13 @@ python scripts/analyze_memory_snapshot.py snap_step*.pickle --mode trend --no-tr
 
 | 措施 | 预期效果 | 代价 |
 |---|---|---|
-| 开启可扩展显存段（分配器把段按需扩展而不是按固定档位切） | 碎片型 OOM 最直接的解法，碎片率常能从 30%+ 降到 10% 以内 | 几乎没有；部分实现与图捕获不兼容 |
-| 调大分配器的分段上限 / 关闭过度切分 | 减少大块被切碎 | 可能略微增加 reserved |
+| 开启可扩展显存段（分配器把段按需扩展而不是按固定档位切），开关名见 `{{profile.pytorch.allocator_config.expandable_segments_key}}` | 碎片型 OOM 最直接的解法，碎片率常能从 30%+ 降到 10% 以内 | 几乎没有；但 `{{profile.pytorch.allocator_config.expandable_segments_graph_safe}}` 为 `false` 时与图捕获互斥 |
+| 调大分配器的分段上限，参数名见 `{{profile.pytorch.allocator_config.max_split_size_key}}` | 超过该大小的空闲块不再被切开复用，减少大块被切碎 | 可能略微增加 reserved |
 | 在阶段边界调用 `{{profile.pytorch.api.empty_cache}}` | 把缓存还给底层，给通信库或其他进程腾地方 | 下次分配要重新向底层申请，有延迟；**不要放在训练主循环里** |
 | 检查有没有该用 `no_grad` 的地方没用（eval、指标计算、数据预处理） | 消除一整条路径的激活 | 无 |
 | 检查 checkpoint 保存路径是不是把整个 state_dict 聚到了一张卡上 | 消除保存时的尖峰 | 无 |
+
+前两项怎么设由 `{{profile.pytorch.allocator_config.entrypoint}}` 决定。**是环境变量的话，必须在第一次分配之前就设好**——分配器只在初始化时读一次，写在训练脚本里通常已经晚了（导入框架时往往就已经建好上下文）。改完务必回到 Step 3 重测碎片率确认生效，不要凭"设了就应该有效"下结论。
 
 #### 4.1 激活重计算（对训练结果零影响）
 

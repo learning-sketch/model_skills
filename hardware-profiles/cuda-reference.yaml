@@ -56,7 +56,15 @@ pytorch:
     manual_seed: "torch.cuda.manual_seed_all"
     deterministic_api: "torch.use_deterministic_algorithms"
 
-  allocator_env_var: "PYTORCH_CUDA_ALLOC_CONF"
+  allocator_config:
+    # 环境变量在分配器首次初始化时读取，必须在第一次分配之前设好。
+    # 存在私有的运行时改法，但不是稳定契约，不登记为入口
+    entrypoint: "env_var"
+    env_var: "PYTORCH_CUDA_ALLOC_CONF"
+    expandable_segments_key: "expandable_segments"
+    max_split_size_key: "max_split_size_mb"
+    # 两者的兼容性随 PyTorch 版本变动过，必须在你用的版本上实测，不照抄
+    expandable_segments_graph_safe: null
 
   op_coverage:
     # CUDA 后端覆盖度高，未实现的算子直接抛 NotImplementedError，不会静默回落

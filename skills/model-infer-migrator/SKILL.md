@@ -47,7 +47,7 @@ description: 把一个大语言模型迁到目标加速卡上跑通，并采集�
 | `diagnostics.version_query_command` | 驱动、运行时、扩展包版本全缺。`diagnostics.smi_command` 只查设备状态，不给软件栈版本 |
 | `devices.models[].supported_dtypes` | `compute.*_tflops` 非 `null` 只说明硬件有算力，不等于该 dtype 在框架侧打通了。按算力选 dtype 会在首次 forward 撞墙 |
 | `pytorch.op_coverage.fallback_policy` / `check_command` | **接入后最常撞的一项**。`silent_host_fallback` 最危险：不报错但性能断崖，只能靠 profiler 的主机侧事件事后发现 |
-| `pytorch.allocator_env_var` | 显存分配器无法调优，碎片类问题没有抓手 |
+| `pytorch.allocator_config.*` | 显存分配器无法调优，碎片类问题没有抓手。只记 `env_var` 不够，还要记可扩展段与分段上限这两个开关叫什么 |
 | `collective.launcher` | 基线记不清单卡是怎么被选出来的，多卡阶段无法对齐 |
 | `inference_framework.version` | 框架接入契约随版本变动很大，不记版本的基线过几周就不可复现 |
 

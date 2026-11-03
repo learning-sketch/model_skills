@@ -93,8 +93,21 @@ pytorch:
     # 确定性开关。train-precision skills 依赖它
     deterministic_api: null       # 例: "torch.use_deterministic_algorithms"
 
-  # 显存分配器的配置环境变量
-  allocator_env_var: null         # 例: "PYTORCH_CUDA_ALLOC_CONF"
+  # 显存分配器的可调项。oom-analysis 第 4 步的「零代价」档全靠这里：
+  # 调分配器不改模型、不改并行配置，是碎片型 OOM 性价比最高的手段。
+  # 但各家的开关名不同，这里不填，skill 就只能让用户自己去翻文档。
+  allocator_config:
+    # 配置入口。决定进程起来之后还能不能改——若只有环境变量，
+    # 就必须在第一次分配之前设好，写在训练脚本里已经太晚
+    entrypoint: null              # "env_var" / "api" / "both"
+    env_var: null                 # 例: "PYTORCH_CUDA_ALLOC_CONF"
+    # 可扩展段的开关名。段按需扩展而不是按固定档位切，是碎片型 OOM 最直接的解法
+    expandable_segments_key: null # 例: "expandable_segments"
+    # 分段上限的参数名。超过该大小的空闲块不再被切开复用，减少大块被切碎
+    max_split_size_key: null      # 例: "max_split_size_mb"
+    # 可扩展段与图捕获是否能同时开。部分实现下两者互斥，
+    # 推理侧开了图捕获就用不了这个解法——必须实测，不要按"应该可以"填
+    expandable_segments_graph_safe: null
 
   # 算子覆盖度。模型接入后首次 forward 最常撞这里
   op_coverage:
@@ -104,8 +117,12 @@ pytorch:
     # 检测哪些算子回落到了主机的手段
     check_command: null
 
-  # 显存快照 pickle 是否与 PyTorch 上游 CUDA 格式同构
-  # （决定 model-train-oom-analysis 的 analyze_memory_snapshot.py 能否直接用）
+  # 显存快照 pickle 是否与 PyTorch 上游 CUDA 格式同构。
+  # 影响面是本 profile 里最大的一项之一：为 false 时
+  # analyze_memory_snapshot.py 的七个分析维度全部不可信，
+  # oom-analysis 的第 2、3 步整个走不通，只剩静态估算和水位探测。
+  # 核对方法：采一份真实快照，确认顶层有 segments 与 device_traces 两个键，
+  # 且每个 segment 带 blocks 列表、每个 block 带 size / state / frames
   memory_snapshot_format_compatible: null   # true / false / "partial"
 
 # ------------------------------------------------------------------------------
@@ -119,7 +136,10 @@ devices:
     - model: null                 # 例: "X100"
       memory_gb: null             # 单卡标称显存（GB）
       # 驱动与运行时的常驻占用（GB）。显存总账要先减掉它，
-      # 否则按 memory_gb 规划 KV cache 池会在接近满载时 OOM
+      # 否则按 memory_gb 规划 KV cache 池会在接近满载时 OOM。
+      # 实测方法：空进程里建一个 device 上下文（随便分配一个小张量），
+      # 然后用 pytorch.api.mem_get_info 读 (free, total)，差值即为常驻占用。
+      # 不要用 memory_allocated 推算——它只报分配器内部的量
       runtime_reserved_gb: null
       memory_bandwidth_gb_s: null # HBM/DRAM 带宽
       # PyTorch 侧实际可用的 dtype 清单。
@@ -578,6 +598,10 @@ precision_tools:
 #     —— oom-analysis、log-visualization、precision 系列的示例路径依赖这里。
 # ------------------------------------------------------------------------------
 training_framework:
+  # 注意：log-visualization 在本节不是 verified 时会告警，提示先用一份真实日志
+  # 核对字段名。照抄 cuda-reference 的取值填完后第一次运行一定会撞到这个告警，
+  # 这是有意的——日志字段名是最容易被框架版本悄悄改掉的一类约定，
+  # 抄来的值碰巧对不上时，脚本会「解析成功但一条数据都没抓到」
   _status: unknown
   name: null                      # 例: "torchtitan" / "Megatron-LM" / 自研
   config_style: null              # 例: "toml" / "python-registry" / "yaml" / "argparse"
@@ -585,7 +609,10 @@ training_framework:
   # 训练日志格式。log-visualization 的正则依赖它
   log_format:
     style: null                   # 例: "torchtitan" / "megatron" / "custom"
-    # 各指标在日志中的字面 key，没有就留 null
+    # 各指标在日志中的字面 key，没有就留 null。
+    # 每项既可以填一个字符串，也可以填字符串列表——同一份日志里同一指标
+    # 出现多种写法是常态（不同 rank、不同阶段、框架升级前后），
+    # 填列表时脚本会逐个尝试。例: loss: ["loss:", "lm loss:", "train_loss="]
     metric_keys:
       step: null                  # 例: "step:"
       loss: null                  # 例: "loss:"
